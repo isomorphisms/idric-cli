@@ -1,0 +1,22 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install JSON tool
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Shell syntax
+        run: bash -n bin/az bin/abe test/az-test.sh test/abe-test.sh
+      - name: Smoke tests
+        run: make test

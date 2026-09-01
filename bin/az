@@ -1,0 +1,436 @@
+#!/usr/bin/env ysh
+
+# Small Grease/YSH Amazon price tool.  Keep this in the shell-and-Unix-tools
+# layer: curl for HTTP, jq for JSON, append-only TSV for observations.
+
+set -eu
+set -o pipefail
+
+TAB=$(printf '\t')
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_DIR=$(dirname -- "$SCRIPT_DIR")
+
+# Public defaults live with the program and are safe to publish.
+if test -f "$REPO_DIR/config/amazon-public"; then
+  . "$REPO_DIR/config/amazon-public"
+fi
+
+: "${AZ_MARKETPLACE:=www.amazon.com}"
+: "${AZ_PARTNER_TAG:=macguyver03-20}"
+: "${AZ_CREATORS_API_BASE:=https://creatorsapi.amazon}"
+
+CONFIG_HOME=${XDG_CONFIG_HOME:-"$HOME/.config"}
+STATE_HOME=${XDG_STATE_HOME:-"$HOME/.local/state"}
+CACHE_HOME=${XDG_CACHE_HOME:-"$HOME/.cache"}
+AZ_CONFIG_DIR=${AZ_CONFIG_DIR:-"$CONFIG_HOME/az"}
+AZ_STATE_DIR=${AZ_STATE_DIR:-"$STATE_HOME/az"}
+AZ_CACHE_DIR=${AZ_CACHE_DIR:-"$CACHE_HOME/az"}
+AZ_SECRET_FILE=${AZ_SECRET_FILE:-"$AZ_CONFIG_DIR/amazon-secret"}
+AZ_PRICE_FILE=${AZ_PRICE_FILE:-"$AZ_STATE_DIR/prices.tsv"}
+AZ_TOKEN_FILE=${AZ_TOKEN_FILE:-"$AZ_CACHE_DIR/amazon-token.tsv"}
+
+if test -f "$AZ_SECRET_FILE"; then
+  . "$AZ_SECRET_FILE"
+fi
+
+: "${AZ_AMAZON_CREDENTIAL_ID:=}"
+: "${AZ_AMAZON_CREDENTIAL_SECRET:=}"
+: "${AZ_AMAZON_CREDENTIAL_VERSION:=}"
+: "${AZ_AMAZON_TOKEN_ENDPOINT:=}"
+
+usage() {
+  cat <<'EOF'
+az -- small Amazon/product-price glue
+
+usage:
+  az link ASIN-OR-AMAZON-URL
+  az price ASIN-OR-AMAZON-URL
+  az search WORDS...
+  az history PRODUCT-OR-AMAZON-URL
+  az observe ASIN-OR-AMAZON-URL PRICE [CURRENCY] [URL]
+  az record SOURCE PRODUCT PRICE CURRENCY URL [METHOD]
+  az doctor
+
+price     fetches the current featured offer through Creators API and appends
+          one timestamped observation to the local price ledger.
+search    asks Creators API for up to ten products; search results are not
+          automatically added to the ledger.
+observe   records an Amazon price you observed yourself. Currency defaults USD.
+record    writes a provider-neutral observation directly.
+
+The ledger is append-only TSV at:
+  $XDG_STATE_HOME/az/prices.tsv
+or, when XDG_STATE_HOME is unset:
+  ~/.local/state/az/prices.tsv
+
+Amazon credentials belong in ~/.config/az/amazon-secret or environment
+variables; never in this repository.
+EOF
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'az: required command not found: %s\n' "$1" >&2
+    exit 127
+  }
+}
+
+extract_asin() {
+  input=$1
+
+  if printf '%s\n' "$input" | grep -Eq '^[[:alnum:]]{10}$'; then
+    printf '%s\n' "$input" | tr '[:lower:]' '[:upper:]'
+    return 0
+  fi
+
+  asin=$(printf '%s\n' "$input" |
+    sed -nE 's#.*(/dp/|/gp/product/)([[:alnum:]]{10})([^[:alnum:]].*)?$#\2#p' |
+    head -n 1 |
+    tr '[:lower:]' '[:upper:]')
+
+  if test -z "$asin"; then
+    printf 'az: cannot find a 10-character ASIN in: %s\n' "$input" >&2
+    return 2
+  fi
+
+  printf '%s\n' "$asin"
+}
+
+history_product() {
+  input=$1
+  case "$input" in
+    http://*|https://*) extract_asin "$input" ;;
+    *)
+      if printf '%s\n' "$input" | grep -Eq '^[[:alnum:]]{10}$'; then
+        printf '%s\n' "$input" | tr '[:lower:]' '[:upper:]'
+      else
+        printf '%s\n' "$input"
+      fi
+      ;;
+  esac
+}
+
+amazon_link() {
+  asin=$(extract_asin "$1") || return
+  printf 'https://%s/dp/%s?tag=%s\n' "$AZ_MARKETPLACE" "$asin" "$AZ_PARTNER_TAG"
+}
+
+credential_endpoint() {
+  if test -n "$AZ_AMAZON_TOKEN_ENDPOINT"; then
+    printf '%s\n' "$AZ_AMAZON_TOKEN_ENDPOINT"
+    return 0
+  fi
+
+  case "$AZ_AMAZON_CREDENTIAL_VERSION" in
+    3.1) printf '%s\n' 'https://api.amazon.com/auth/o2/token' ;;
+    3.2) printf '%s\n' 'https://api.amazon.co.uk/auth/o2/token' ;;
+    3.3) printf '%s\n' 'https://api.amazon.co.jp/auth/o2/token' ;;
+    *)
+      printf 'az: unsupported or missing Amazon credential version: %s\n' \
+        "${AZ_AMAZON_CREDENTIAL_VERSION:-<empty>}" >&2
+      printf 'az: expected 3.1, 3.2, or 3.3\n' >&2
+      return 2
+      ;;
+  esac
+}
+
+require_amazon_credentials() {
+  if test -z "$AZ_AMAZON_CREDENTIAL_ID" ||
+     test -z "$AZ_AMAZON_CREDENTIAL_SECRET" ||
+     test -z "$AZ_AMAZON_CREDENTIAL_VERSION"; then
+    cat >&2 <<EOF
+az: Creators API credentials are not configured.
+
+Put these in $AZ_SECRET_FILE (chmod 600):
+  AZ_AMAZON_CREDENTIAL_ID=...
+  AZ_AMAZON_CREDENTIAL_SECRET=...
+  AZ_AMAZON_CREDENTIAL_VERSION=3.1
+EOF
+    return 2
+  fi
+}
+
+cached_token() {
+  test -f "$AZ_TOKEN_FILE" || return 1
+
+  IFS=$TAB read -r expires token < "$AZ_TOKEN_FILE" || return 1
+  case "$expires" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  now=$(date +%s)
+  # Leave a one-minute margin so a token cannot expire halfway through a call.
+  if test "$now" -lt "$((expires - 60))" && test -n "$token"; then
+    printf '%s\n' "$token"
+    return 0
+  fi
+
+  return 1
+}
+
+amazon_token() {
+  need curl
+  need jq
+  require_amazon_credentials || return
+
+  if token=$(cached_token); then
+    printf '%s\n' "$token"
+    return 0
+  fi
+
+  endpoint=$(credential_endpoint) || return
+  payload=$(jq -cn \
+    --arg id "$AZ_AMAZON_CREDENTIAL_ID" \
+    --arg secret "$AZ_AMAZON_CREDENTIAL_SECRET" \
+    '{grant_type:"client_credentials", client_id:$id, client_secret:$secret, scope:"creatorsapi::default"}')
+
+  if ! response=$(curl --fail-with-body -sS \
+      -X POST "$endpoint" \
+      -H 'Content-Type: application/json' \
+      --data "$payload"); then
+    printf 'az: Amazon token request failed\n%s\n' "$response" >&2
+    return 1
+  fi
+
+  token=$(printf '%s' "$response" | jq -r '.access_token // empty')
+  expires_in=$(printf '%s' "$response" | jq -r '.expires_in // 3600')
+
+  if test -z "$token"; then
+    printf 'az: token response had no access_token\n%s\n' "$response" >&2
+    return 1
+  fi
+
+  case "$expires_in" in
+    ''|*[!0-9]*) expires_in=3600 ;;
+  esac
+
+  mkdir -p "$AZ_CACHE_DIR"
+  now=$(date +%s)
+  expires=$((now + expires_in))
+  umask 077
+  printf '%s\t%s\n' "$expires" "$token" > "$AZ_TOKEN_FILE"
+  printf '%s\n' "$token"
+}
+
+amazon_post() {
+  operation=$1
+  body=$2
+
+  need curl
+  token=$(amazon_token) || return
+
+  if ! response=$(curl --fail-with-body -sS \
+      -X POST "$AZ_CREATORS_API_BASE/$operation" \
+      -H "Authorization: Bearer $token" \
+      -H 'Content-Type: application/json' \
+      -H "x-marketplace: $AZ_MARKETPLACE" \
+      --data "$body"); then
+    printf 'az: Creators API request failed\n%s\n' "$response" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$response"
+}
+
+safe_field() {
+  printf '%s' "$1" | tr '\t\r\n' '   '
+}
+
+record_observation() {
+  observed_at=$1
+  source=$2
+  method=$3
+  product=$4
+  amount=$5
+  currency=$6
+  url=$7
+
+  mkdir -p "$AZ_STATE_DIR"
+
+  if ! test -f "$AZ_PRICE_FILE"; then
+    printf 'observed_at\tsource\tmethod\tproduct\tamount\tcurrency\tbuy_url\n' > "$AZ_PRICE_FILE"
+  fi
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(safe_field "$observed_at")" \
+    "$(safe_field "$source")" \
+    "$(safe_field "$method")" \
+    "$(safe_field "$product")" \
+    "$(safe_field "$amount")" \
+    "$(safe_field "$currency")" \
+    "$(safe_field "$url")" >> "$AZ_PRICE_FILE"
+}
+
+cmd_link() {
+  test "$#" -eq 1 || { usage >&2; return 2; }
+  amazon_link "$1"
+}
+
+cmd_price() {
+  test "$#" -eq 1 || { usage >&2; return 2; }
+  need jq
+  asin=$(extract_asin "$1") || return
+
+  body=$(jq -cn \
+    --arg asin "$asin" \
+    --arg marketplace "$AZ_MARKETPLACE" \
+    --arg tag "$AZ_PARTNER_TAG" \
+    '{itemIds:[$asin], itemIdType:"ASIN", marketplace:$marketplace, partnerTag:$tag,
+      resources:["offersV2.listings.price","offersV2.listings.isBuyBoxWinner"]}')
+
+  response=$(amazon_post 'catalog/v1/getItems' "$body") || return
+
+  row=$(printf '%s' "$response" | jq -r '
+    .itemsResult.items[0] // empty
+    | . as $item
+    | (($item.offersV2.listings // []) |
+       (map(select(.isBuyBoxWinner == true))[0] // .[0])) as $listing
+    | select($listing.price.money.amount != null)
+    | [$item.asin,
+       ($listing.price.money.amount | tostring),
+       ($listing.price.money.currency // ""),
+       ($item.detailPageURL // "")]
+    | @tsv')
+
+  if test -z "$row"; then
+    printf 'az: no priced featured offer returned for %s\n' "$asin" >&2
+    return 3
+  fi
+
+  IFS=$TAB read -r got_asin amount currency url <<EOF
+$row
+EOF
+
+  observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  record_observation "$observed_at" "$AZ_MARKETPLACE" 'creators-api' \
+    "$got_asin" "$amount" "$currency" "$url"
+
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$observed_at" "$got_asin" "$amount" "$currency" "$url"
+}
+
+cmd_search() {
+  test "$#" -ge 1 || { usage >&2; return 2; }
+  need jq
+  query=$*
+
+  body=$(jq -cn \
+    --arg query "$query" \
+    --arg marketplace "$AZ_MARKETPLACE" \
+    --arg tag "$AZ_PARTNER_TAG" \
+    '{keywords:$query, searchIndex:"All", itemCount:10,
+      marketplace:$marketplace, partnerTag:$tag,
+      resources:["itemInfo.title","offersV2.listings.price","offersV2.listings.isBuyBoxWinner"]}')
+
+  response=$(amazon_post 'catalog/v1/searchItems' "$body") || return
+
+  printf 'asin\tamount\tcurrency\tbuy_url\ttitle\n'
+  printf '%s' "$response" | jq -r '
+    .searchResult.items[]? as $item
+    | (($item.offersV2.listings // []) |
+       (map(select(.isBuyBoxWinner == true))[0] // .[0])) as $listing
+    | [$item.asin,
+       (($listing.price.money.amount // "") | tostring),
+       ($listing.price.money.currency // ""),
+       ($item.detailPageURL // ""),
+       ($item.itemInfo.title.displayValue // "")]
+    | @tsv'
+}
+
+cmd_history() {
+  test "$#" -eq 1 || { usage >&2; return 2; }
+  product=$(history_product "$1") || return
+
+  if ! test -f "$AZ_PRICE_FILE"; then
+    printf 'az: no price ledger yet: %s\n' "$AZ_PRICE_FILE" >&2
+    return 0
+  fi
+
+  awk -F "$TAB" -v product="$product" 'NR == 1 || $4 == product' "$AZ_PRICE_FILE"
+}
+
+cmd_observe() {
+  test "$#" -ge 2 && test "$#" -le 4 || { usage >&2; return 2; }
+  asin=$(extract_asin "$1") || return
+  amount=$2
+  currency=${3:-USD}
+
+  if test "$#" -ge 4; then
+    url=$4
+  else
+    url=$(amazon_link "$asin")
+  fi
+
+  observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  record_observation "$observed_at" "$AZ_MARKETPLACE" 'manual' \
+    "$asin" "$amount" "$currency" "$url"
+
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$observed_at" "$asin" "$amount" "$currency" "$url"
+}
+
+cmd_record() {
+  test "$#" -ge 5 && test "$#" -le 6 || { usage >&2; return 2; }
+  source=$1
+  product=$2
+  amount=$3
+  currency=$4
+  url=$5
+  method=${6:-manual}
+  observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+  record_observation "$observed_at" "$source" "$method" \
+    "$product" "$amount" "$currency" "$url"
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$observed_at" "$source" "$method" "$product" "$amount" "$currency" "$url"
+}
+
+cmd_doctor() {
+  status=0
+
+  for dependency in curl jq grep sed awk date; do
+    if command -v "$dependency" >/dev/null 2>&1; then
+      printf 'ok\t%s\n' "$dependency"
+    else
+      printf 'missing\t%s\n' "$dependency"
+      status=1
+    fi
+  done
+
+  printf 'marketplace\t%s\n' "$AZ_MARKETPLACE"
+  printf 'partner_tag\t%s\n' "$AZ_PARTNER_TAG"
+  printf 'price_file\t%s\n' "$AZ_PRICE_FILE"
+  printf 'secret_file\t%s\n' "$AZ_SECRET_FILE"
+
+  if test -n "$AZ_AMAZON_CREDENTIAL_ID" &&
+     test -n "$AZ_AMAZON_CREDENTIAL_SECRET" &&
+     test -n "$AZ_AMAZON_CREDENTIAL_VERSION"; then
+    printf 'creators_credentials\tconfigured (%s)\n' "$AZ_AMAZON_CREDENTIAL_VERSION"
+  else
+    printf 'creators_credentials\tnot configured\n'
+  fi
+
+  return "$status"
+}
+
+command=${1:-help}
+if test "$#" -gt 0; then
+  shift
+fi
+
+case "$command" in
+  link) cmd_link "$@" ;;
+  price) cmd_price "$@" ;;
+  search) cmd_search "$@" ;;
+  history) cmd_history "$@" ;;
+  observe) cmd_observe "$@" ;;
+  record) cmd_record "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  help|-h|--help) usage ;;
+  *)
+    printf 'az: unknown command: %s\n' "$command" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,60 @@
+module Ft
+
+import System
+
+
+search_endpoint : String
+search_endpoint = "https://api.ft.com/content/search/v1"
+
+usage : String
+usage = "usage: ft {search-body QUERY | content UUID | notifications SINCE | live-search QUERY}"
+
+json_escape : String → String
+json_escape text = ?json_escape_string
+
+percent_encode : String → String
+percent_encode text = ?percent_encode_query
+
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+-- FT search needs both X-Api-Key and Content-Type: application/json. Current
+-- ICU has GET/POST but no arbitrary caller-supplied request headers. This hole
+-- is the intended language/ICU checkpoint rather than a curl fallback.
+icu_post_with_headers : String → List (String, String) → String → IO ()
+icu_post_with_headers url headers body = ?icu_post_custom_headers
+
+search_body : String → String
+search_body query =
+  "{\"queryString\":\"" ++ json_escape query ++
+  "\",\"resultContext\":{\"aspects\":[\"title\",\"lifecycle\",\"location\",\"summary\",\"editorial\"]," ++
+  "\"sortOrder\":\"ASC\",\"sortField\":\"initialPublishDateTime\"}}"
+
+content_url : String → String
+content_url uuid = "https://api.ft.com/content/" ++ uuid
+
+notifications_url : String → String
+notifications_url since =
+  "https://api.ft.com/content/notifications?since=" ++ percent_encode since
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: "search-body" :: query :: [] => putStrLn (search_body query)
+    _ :: "content" :: uuid :: [] => putStrLn (content_url uuid)
+    _ :: "notifications" :: since :: [] => putStrLn (notifications_url since)
+    _ :: "live-search" :: query :: [] => do
+      maybe_key ← environment_value "FT_API_KEY"
+      case maybe_key of
+        Nothing => do
+          putStrLn "ft: missing FT_API_KEY"
+          exitFailure
+        Just key =>
+          icu_post_with_headers search_endpoint
+            [("X-Api-Key", key), ("Content-Type", "application/json")]
+            (search_body query)
+    _ => do
+      putStrLn usage
+      exitFailure

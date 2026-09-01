@@ -1,0 +1,109 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
+AZ="$ROOT/bin/az"
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+export HOME="$TMP/home"
+export XDG_CONFIG_HOME="$TMP/config"
+export XDG_STATE_HOME="$TMP/state"
+export XDG_CACHE_HOME="$TMP/cache"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+
+fail() {
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
+}
+
+expect_eq() {
+  local expected=$1
+  local actual=$2
+  local label=$3
+  [[ "$actual" == "$expected" ]] || fail "$label: expected [$expected], got [$actual]"
+}
+
+# Public affiliate-link primitive.
+expect_eq \
+  'https://www.amazon.com/dp/B012345678?tag=macguyver03-20' \
+  "$(bash "$AZ" link B012345678)" \
+  'ASIN link'
+
+expect_eq \
+  'https://www.amazon.com/dp/B012345678?tag=macguyver03-20' \
+  "$(bash "$AZ" link 'https://www.amazon.com/dp/b012345678?th=1')" \
+  'URL ASIN extraction'
+
+# Manual observation is immediately useful before Creators credentials exist.
+bash "$AZ" observe B012345678 19.99 >/dev/null
+PRICE_FILE="$XDG_STATE_HOME/az/prices.tsv"
+[[ -f "$PRICE_FILE" ]] || fail 'price ledger was not created'
+[[ $(wc -l < "$PRICE_FILE") -eq 2 ]] || fail 'manual observation should add one row'
+grep -F $'www.amazon.com\tmanual\tB012345678\t19.99\tUSD\thttps://www.amazon.com/dp/B012345678?tag=macguyver03-20' "$PRICE_FILE" >/dev/null ||
+  fail 'manual observation row is wrong'
+
+# Provider-neutral records use the same ledger and history lookup.
+bash "$AZ" record example.test isbn:9780000000000 8.50 USD \
+  https://example.test/book html >/dev/null
+history=$(bash "$AZ" history isbn:9780000000000)
+[[ "$history" == *$'example.test\thtml\tisbn:9780000000000\t8.50\tUSD\thttps://example.test/book'* ]] ||
+  fail 'provider-neutral history lookup failed'
+
+# Mock curl lets the complete Creators flow run without live credentials or network.
+mkdir -p "$TMP/bin"
+export AZ_FAKE_CALLS="$TMP/curl-calls"
+cat > "$TMP/bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$AZ_FAKE_CALLS"
+for arg in "$@"; do
+  case "$arg" in
+    https://mock/token)
+      printf '%s\n' '{"access_token":"test-token","expires_in":3600}'
+      exit 0
+      ;;
+    https://mock/catalog/v1/getItems)
+      cat <<'JSON'
+{"itemsResult":{"items":[{"asin":"B012345678","detailPageURL":"https://www.amazon.com/dp/B012345678?tag=macguyver03-20&linkCode=ogi","offersV2":{"listings":[{"isBuyBoxWinner":true,"price":{"money":{"amount":23.45,"currency":"USD","displayAmount":"$23.45"}}}]}}]}}
+JSON
+      exit 0
+      ;;
+    https://mock/catalog/v1/searchItems)
+      cat <<'JSON'
+{"searchResult":{"items":[{"asin":"B098765432","detailPageURL":"https://www.amazon.com/dp/B098765432?tag=macguyver03-20&linkCode=osi","itemInfo":{"title":{"displayValue":"A Small Useful Book"}},"offersV2":{"listings":[{"isBuyBoxWinner":true,"price":{"money":{"amount":12.34,"currency":"USD"}}}]}}]}}
+JSON
+      exit 0
+      ;;
+  esac
+done
+printf 'fake curl: unexpected arguments: %s\n' "$*" >&2
+exit 22
+EOF
+chmod +x "$TMP/bin/curl"
+
+export PATH="$TMP/bin:$PATH"
+export AZ_AMAZON_CREDENTIAL_ID='test-id'
+export AZ_AMAZON_CREDENTIAL_SECRET='test-secret'
+export AZ_AMAZON_CREDENTIAL_VERSION='3.1'
+export AZ_AMAZON_TOKEN_ENDPOINT='https://mock/token'
+export AZ_CREATORS_API_BASE='https://mock'
+
+api_price=$(bash "$AZ" price B012345678)
+[[ "$api_price" == *$'B012345678\t23.45\tUSD\thttps://www.amazon.com/dp/B012345678?tag=macguyver03-20&linkCode=ogi'* ]] ||
+  fail 'Creators price output is wrong'
+
+grep -F $'www.amazon.com\tcreators-api\tB012345678\t23.45\tUSD\thttps://www.amazon.com/dp/B012345678?tag=macguyver03-20&linkCode=ogi' "$PRICE_FILE" >/dev/null ||
+  fail 'Creators price was not recorded'
+
+search=$(bash "$AZ" search small useful book)
+[[ "$search" == *$'B098765432\t12.34\tUSD\thttps://www.amazon.com/dp/B098765432?tag=macguyver03-20&linkCode=osi\tA Small Useful Book'* ]] ||
+  fail 'Creators search output is wrong'
+
+# A second API operation should reuse the one-hour token cache.
+token_calls=$(grep -c 'https://mock/token' "$AZ_FAKE_CALLS")
+[[ "$token_calls" -eq 1 ]] || fail "expected one token request, got $token_calls"
+
+grep -F 'macguyver03-20' "$AZ_FAKE_CALLS" >/dev/null ||
+  fail 'partner tag did not reach Creators request payload'
+
+printf 'ok\n'

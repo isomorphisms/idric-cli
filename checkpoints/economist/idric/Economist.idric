@@ -1,0 +1,53 @@
+module Economist
+
+import System
+
+
+base : String
+base = "https://api.economist.com/eco/content/all/b2b-content-api"
+
+usage : String
+usage = "usage: economist {articles FROM TO | article ID | sections | tags | brief | login-body}"
+
+percent_encode : String → String
+percent_encode text = ?percent_encode_query
+
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+-- Economist requires Content-Type on login and Bearer Authorization on content
+-- calls. Current ICU has GET/POST but not arbitrary caller-supplied headers.
+-- Keep this as the explicit transport watchpoint.
+icu_request_with_headers : String → String → List (String, String) → Maybe String → IO ()
+icu_request_with_headers method url headers body = ?icu_custom_request_headers
+
+articles_url : String → String → String
+articles_url from_date to_date =
+  base ++ "/v1/articles?start_date=" ++ percent_encode from_date ++
+  "&end_date=" ++ percent_encode to_date
+
+login_body : String → String → String
+login_body client_id client_secret =
+  "{\"client_id\":\"" ++ client_id ++ "\",\"client_secret\":\"" ++ client_secret ++ "\"}"
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: "articles" :: from_date :: to_date :: [] => putStrLn (articles_url from_date to_date)
+    _ :: "article" :: article_id :: [] => putStrLn (base ++ "/v1/articles/" ++ article_id)
+    _ :: "sections" :: [] => putStrLn (base ++ "/v1/sections")
+    _ :: "tags" :: [] => putStrLn (base ++ "/v1/tags")
+    _ :: "brief" :: [] => putStrLn (base ++ "/v1/the-world-in-brief")
+    _ :: "login-body" :: [] => do
+      maybe_id ← environment_value "ECONOMIST_CLIENT_ID"
+      maybe_secret ← environment_value "ECONOMIST_CLIENT_SECRET"
+      case (maybe_id, maybe_secret) of
+        (Just client_id, Just client_secret) => putStrLn (login_body client_id client_secret)
+        _ => do
+          putStrLn "economist: missing ECONOMIST_CLIENT_ID or ECONOMIST_CLIENT_SECRET"
+          exitFailure
+    _ => do
+      putStrLn usage
+      exitFailure

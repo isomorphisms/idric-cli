@@ -1,0 +1,57 @@
+#!/usr/bin/env ysh
+
+# Manual Idriç Reddit checkpoint runner.
+# Deliberately not part of the root make test while named holes remain.
+
+set -u
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+IDRIC=${IDRIC:-idris2}
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+
+status=0
+
+available() {
+  case "$1" in
+    */*) test -x "$1" ;;
+    *) command -v "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
+pass() {
+  printf 'PASS\t%s\n' "$1"
+}
+
+fail() {
+  printf 'FAIL\t%s\n' "$1"
+  status=1
+}
+
+skip() {
+  printf 'SKIP\t%s\n' "$1"
+}
+
+show_diagnostics() {
+  for path in "$@"; do
+    if test -s "$path"; then
+      sed 's/^/  /' "$path"
+    fi
+  done
+}
+
+if ! available "$IDRIC"; then
+  skip "idric (not found: $IDRIC)"
+  exit 0
+fi
+
+if "$IDRIC" --check "$HERE/idric/Reddit.idric" \
+    >"$TMP/idric" 2>"$TMP/idric.err"; then
+  pass 'idric/check'
+else
+  fail 'idric/check'
+  show_diagnostics "$TMP/idric" "$TMP/idric.err"
+fi
+
+exit "$status"
