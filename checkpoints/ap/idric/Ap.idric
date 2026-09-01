@@ -1,0 +1,50 @@
+module Ap
+
+import System
+
+
+base : String
+base = "https://api.ap.org/media/v"
+
+usage : String
+usage = "usage: ap {search-url QUERY | item ID | feed | rss | rss-id ID | ondemand | live-choice | account | followed-topics | plans | live-search QUERY}"
+
+percent_encode : String → String
+percent_encode text = ?percent_encode_query
+
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+-- AP requires x-api-key on requests. Current ICU cannot yet attach arbitrary
+-- caller-supplied request headers, so keep this boundary explicit.
+icu_get_with_headers : String → List (String, String) → IO ()
+icu_get_with_headers url headers = ?icu_get_custom_headers
+
+search_url : String → String
+search_url query = base ++ "/content/search?q=" ++ percent_encode query ++ "&page_size=25"
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: "search-url" :: query :: [] => putStrLn (search_url query)
+    _ :: "item" :: item_id :: [] => putStrLn (base ++ "/content/" ++ item_id)
+    _ :: "feed" :: [] => putStrLn (base ++ "/content/feed")
+    _ :: "rss" :: [] => putStrLn (base ++ "/content/rss")
+    _ :: "rss-id" :: rss_id :: [] => putStrLn (base ++ "/content/rss/" ++ rss_id)
+    _ :: "ondemand" :: [] => putStrLn (base ++ "/content/ondemand")
+    _ :: "live-choice" :: [] => putStrLn (base ++ "/content/live-choice-events")
+    _ :: "account" :: [] => putStrLn (base ++ "/account")
+    _ :: "followed-topics" :: [] => putStrLn (base ++ "/account/followedtopics")
+    _ :: "plans" :: [] => putStrLn (base ++ "/account/plans")
+    _ :: "live-search" :: query :: [] => do
+      maybe_key ← environment_value "AP_API_KEY"
+      case maybe_key of
+        Nothing => do
+          putStrLn "ap: missing AP_API_KEY"
+          exitFailure
+        Just key => icu_get_with_headers (search_url query) [("x-api-key", key)]
+    _ => do
+      putStrLn usage
+      exitFailure

@@ -1,0 +1,31 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": "t3_next_page",
+    "dist": 2,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "created_utc": 1788172800,
+          "score": 17,
+          "subreddit": "maintenance",
+          "author": "sample_one",
+          "title": "Industrial maintenance day shift",
+          "permalink": "/r/maintenance/comments/abc123/industrial_maintenance_day_shift/"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "created_utc": 1788172860,
+          "score": 5,
+          "subreddit": "machinists",
+          "author": "sample_two",
+          "title": "PLC troubleshooting notes",
+          "permalink": "/r/machinists/comments/def456/plc_troubleshooting_notes/"
+        }
+      }
+    ]
+  }
+}

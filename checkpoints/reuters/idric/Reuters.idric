@@ -1,0 +1,64 @@
+module Reuters
+
+import System
+
+
+usage : String
+usage = "usage: reuters {endpoint | body QUERY_FILE | live QUERY_FILE}"
+
+json_escape : String → String
+json_escape text = ?json_escape_string
+
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+read_text : String → IO (Either String String)
+read_text path = ?read_text_file
+
+-- Reuters' licensed integration uses GraphQL over HTTP. The public product
+-- material does not publish the customer auth/header contract. Keep both the
+-- endpoint and headers explicit configuration, and do not invent them here.
+icu_graphql_post : String → List (String, String) → String → IO ()
+icu_graphql_post url headers body = ?icu_post_custom_headers
+
+request_body : String → String
+request_body query = "{\"query\":\"" ++ json_escape query ++ "\"}"
+
+require_endpoint : IO String
+require_endpoint = do
+  value ← environment_value "REUTERS_GRAPHQL_URL"
+  case value of
+    Just endpoint => pure endpoint
+    Nothing => do
+      putStrLn "reuters: missing REUTERS_GRAPHQL_URL"
+      exitFailure
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: "endpoint" :: [] => do
+      endpoint ← require_endpoint
+      putStrLn endpoint
+    _ :: "body" :: path :: [] => do
+      outcome ← read_text path
+      case outcome of
+        Left problem => do
+          putStrLn ("reuters: " ++ problem)
+          exitFailure
+        Right query => putStrLn (request_body query)
+    _ :: "live" :: path :: [] => do
+      endpoint ← require_endpoint
+      outcome ← read_text path
+      case outcome of
+        Left problem => do
+          putStrLn ("reuters: " ++ problem)
+          exitFailure
+        Right query =>
+          -- Header names/values belong to the licensed Reuters configuration.
+          -- This named hole is intentionally not replaced with guessed auth.
+          ?reuters_live_headers_and_icu_post
+    _ => do
+      putStrLn usage
+      exitFailure

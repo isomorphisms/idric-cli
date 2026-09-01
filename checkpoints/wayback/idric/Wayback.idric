@@ -1,0 +1,52 @@
+module Wayback
+
+import System
+
+
+cdx : String
+cdx = "https://web.archive.org/cdx/search/cdx"
+
+usage : String
+usage = "usage: wayback {url URL FROM TO | domain DOMAIN FROM TO | search URL FROM TO | replay TIMESTAMP URL}"
+
+percent_encode : String → String
+percent_encode text = ?percent_encode_query
+
+icu_get : String → IO ()
+icu_get url = ?run_icu_get_and_forward_stdout
+
+query_url : String → String → String → String → String
+query_url target match_type from_date to_date =
+  cdx ++ "?url=" ++ percent_encode target ++
+  "&matchType=" ++ match_type ++
+  "&from=" ++ percent_encode from_date ++
+  "&to=" ++ percent_encode to_date ++
+  "&output=json&fl=timestamp,original,statuscode,mimetype,digest" ++
+  "&filter=statuscode:200&filter=mimetype:text/html&collapse=digest&gzip=false"
+
+exact_url : String → String → String → String
+exact_url target from_date to_date = query_url target "exact" from_date to_date
+
+domain_url : String → String → String → String
+domain_url target from_date to_date = query_url target "domain" from_date to_date
+
+replay_url : String → String → String
+replay_url timestamp target =
+  "https://web.archive.org/web/" ++ timestamp ++ "id_/" ++ target
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: "url" :: target :: from_date :: to_date :: [] =>
+      putStrLn (exact_url target from_date to_date)
+    _ :: "domain" :: target :: from_date :: to_date :: [] =>
+      putStrLn (domain_url target from_date to_date)
+    _ :: "search" :: target :: from_date :: to_date :: [] =>
+      icu_get (exact_url target from_date to_date)
+    _ :: "replay" :: timestamp :: target :: [] =>
+      putStrLn (replay_url timestamp target)
+    _ => do
+      putStrLn usage
+      exitFailure

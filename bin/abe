@@ -1,0 +1,321 @@
+#!/usr/bin/env ysh
+
+# AbeBooks -> cheapest delivered listing -> Impact affiliate URL.
+# Keep this in the Grease/YSH + Unix-tools layer: curl for HTTP, sed/tr for
+# the tiny XML projection, jq only for URI encoding.
+
+set -eu
+set -o pipefail
+
+TAB=$(printf '\t')
+CONFIG_HOME=${XDG_CONFIG_HOME:-"$HOME/.config"}
+STATE_HOME=${XDG_STATE_HOME:-"$HOME/.local/state"}
+AZ_CONFIG_DIR=${AZ_CONFIG_DIR:-"$CONFIG_HOME/az"}
+AZ_STATE_DIR=${AZ_STATE_DIR:-"$STATE_HOME/az"}
+AZ_PRICE_FILE=${AZ_PRICE_FILE:-"$AZ_STATE_DIR/prices.tsv"}
+AZ_ABEBOOKS_CONFIG_FILE=${AZ_ABEBOOKS_CONFIG_FILE:-"$AZ_CONFIG_DIR/abebooks-impact"}
+
+if test -f "$AZ_ABEBOOKS_CONFIG_FILE"; then
+  . "$AZ_ABEBOOKS_CONFIG_FILE"
+fi
+
+# Impact partner/account ID is public and intentionally checked in.
+: "${AZ_IMPACT_ID:=349003}"
+: "${AZ_ABEBOOKS_CLIENT_KEY:=}"
+: "${AZ_ABEBOOKS_SEARCH_URL:=https://search2.abebooks.com/search}"
+: "${AZ_ABEBOOKS_TARGETSITE:=abebooks.com}"
+: "${AZ_ABEBOOKS_DESTINATION_COUNTRY:=USA}"
+: "${AZ_ABEBOOKS_CURRENCY:=USD}"
+
+usage() {
+  cat <<'EOF'
+abe -- cheapest delivered AbeBooks listing with Impact affiliate link
+
+usage:
+  abe ISBN-OR-TITLE...
+  abe find ISBN-OR-TITLE...
+  abe used ISBN-OR-TITLE...
+  abe link ABEBOOKS-URL
+  abe doctor
+
+Examples:
+  abe 9780131457577
+  abe used 9780131457577
+  abe 'Marketing Management'
+  abe link 'https://www.abebooks.com/servlet/BookDetailsPL?bi=22908240098'
+
+Configuration goes in ~/.config/az/abebooks-impact or environment variables:
+  AZ_ABEBOOKS_CLIENT_KEY=...
+
+The public Impact partner ID defaults to 349003 and is checked into this repo.
+Override AZ_IMPACT_ID only when deliberately using another Impact account.
+
+`find` asks AbeBooks Search Web Services for one result sorted by total price,
+including shipping to the configured destination country. `used` makes the
+same query with AbeBooks' bookcondition=used filter. The returned listing URL
+is wrapped in AbeBooks' documented Impact link format.
+EOF
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'abe: required command not found: %s\n' "$1" >&2
+    exit 127
+  }
+}
+
+require_impact_id() {
+  if test -z "$AZ_IMPACT_ID"; then
+    printf 'abe: AZ_IMPACT_ID is not configured\n' >&2
+    printf 'abe: put it in %s or the environment\n' "$AZ_ABEBOOKS_CONFIG_FILE" >&2
+    return 2
+  fi
+}
+
+require_search_config() {
+  require_impact_id || return
+  if test -z "$AZ_ABEBOOKS_CLIENT_KEY"; then
+    printf 'abe: AZ_ABEBOOKS_CLIENT_KEY is not configured\n' >&2
+    printf 'abe: put it in %s or the environment\n' "$AZ_ABEBOOKS_CONFIG_FILE" >&2
+    return 2
+  fi
+}
+
+uri_encode() {
+  need jq
+  jq -rn --arg value "$1" '$value | @uri'
+}
+
+xml_unescape() {
+  sed \
+    -e 's/&amp;/\&/g' \
+    -e 's/&quot;/"/g' \
+    -e "s/&apos;/'/g" \
+    -e 's/&lt;/</g' \
+    -e 's/&gt;/>/g'
+}
+
+xml_tag() {
+  tag=$1
+  xml=$2
+  printf '%s\n' "$xml" |
+    sed -n "s#.*<$tag>\\([^<]*\\)</$tag>.*#\\1#p" |
+    head -n 1 |
+    xml_unescape
+}
+
+normalize_listing_url() {
+  case "$1" in
+    http://*|https://*) printf '%s\n' "$1" ;;
+    *) printf 'https://%s\n' "$1" ;;
+  esac
+}
+
+affiliate_link() {
+  require_impact_id || return
+  listing_url=$(normalize_listing_url "$1")
+  encoded=$(uri_encode "$listing_url")
+  printf 'https://affiliates.abebooks.com/c/%s/77798/2029?u=%s\n' \
+    "$AZ_IMPACT_ID" "$encoded"
+}
+
+safe_field() {
+  printf '%s' "$1" | tr '\t\r\n' '   '
+}
+
+record_observation() {
+  observed_at=$1
+  product=$2
+  amount=$3
+  currency=$4
+  buy_url=$5
+  method=${6:-abebooks-sws}
+
+  mkdir -p "$AZ_STATE_DIR"
+  if ! test -f "$AZ_PRICE_FILE"; then
+    printf 'observed_at\tsource\tmethod\tproduct\tamount\tcurrency\tbuy_url\n' > "$AZ_PRICE_FILE"
+  fi
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(safe_field "$observed_at")" \
+    'www.abebooks.com' \
+    "$(safe_field "$method")" \
+    "$(safe_field "$product")" \
+    "$(safe_field "$amount")" \
+    "$(safe_field "$currency")" \
+    "$(safe_field "$buy_url")" >> "$AZ_PRICE_FILE"
+}
+
+search_field_and_value() {
+  query=$1
+  compact=$(printf '%s' "$query" | tr -d ' -')
+
+  if printf '%s\n' "$compact" | grep -Eq '^[0-9]{13}$|^[0-9]{9}[0-9Xx]$'; then
+    printf 'isbn\t%s\n' "$compact"
+    return 0
+  fi
+
+  # AbeBooks specifies ISO-8859-1 bytes for request parameter values.
+  need iconv
+  latin1=$(printf '%s' "$query" | iconv -f UTF-8 -t ISO-8859-1) || {
+    printf 'abe: title cannot be represented in AbeBooks ISO-8859-1 query encoding\n' >&2
+    return 2
+  }
+  printf 'title\t%s\n' "$latin1"
+}
+
+run_search() {
+  search_field=$1
+  search_value=$2
+  book_condition=${3:-}
+
+  if test -n "$book_condition"; then
+    curl --fail-with-body -sS -G "$AZ_ABEBOOKS_SEARCH_URL" \
+      --data-urlencode "clientkey=$AZ_ABEBOOKS_CLIENT_KEY" \
+      --data-urlencode "targetsite=$AZ_ABEBOOKS_TARGETSITE" \
+      --data-urlencode "destinationcountry=$AZ_ABEBOOKS_DESTINATION_COUNTRY" \
+      --data-urlencode "currency=$AZ_ABEBOOKS_CURRENCY" \
+      --data-urlencode 'sortorder=17' \
+      --data-urlencode 'maxresults=1' \
+      --data-urlencode 'outputsize=short' \
+      --data-urlencode "bookcondition=$book_condition" \
+      --data-urlencode "$search_field=$search_value"
+  else
+    curl --fail-with-body -sS -G "$AZ_ABEBOOKS_SEARCH_URL" \
+      --data-urlencode "clientkey=$AZ_ABEBOOKS_CLIENT_KEY" \
+      --data-urlencode "targetsite=$AZ_ABEBOOKS_TARGETSITE" \
+      --data-urlencode "destinationcountry=$AZ_ABEBOOKS_DESTINATION_COUNTRY" \
+      --data-urlencode "currency=$AZ_ABEBOOKS_CURRENCY" \
+      --data-urlencode 'sortorder=17' \
+      --data-urlencode 'maxresults=1' \
+      --data-urlencode 'outputsize=short' \
+      --data-urlencode "$search_field=$search_value"
+  fi
+}
+
+cmd_link() {
+  test "$#" -eq 1 || { usage >&2; return 2; }
+  affiliate_link "$1"
+}
+
+cmd_find() {
+  test "$#" -ge 1 || { usage >&2; return 2; }
+  require_search_config || return
+  need curl
+  need grep
+  need sed
+  need tr
+
+  query=$*
+  field_value=$(search_field_and_value "$query") || return
+  search_field=${field_value%%"$TAB"*}
+  search_value=${field_value#*"$TAB"}
+  book_condition=${AZ_ABEBOOKS_BOOKCONDITION:-}
+
+  if ! response=$(run_search "$search_field" "$search_value" "$book_condition"); then
+    printf 'abe: AbeBooks search request failed\n' >&2
+    return 1
+  fi
+
+  # maxresults=1 makes this deliberately tiny: flatten the response and project
+  # just the first Book record instead of introducing an XML application stack.
+  flat=$(printf '%s' "$response" | tr '\r\n' '  ')
+  book=$(printf '%s\n' "$flat" | sed -n 's#.*<Book>\(.*\)</Book>.*#\1#p')
+
+  if test -z "$book"; then
+    printf 'abe: no AbeBooks listing found for: %s\n' "$query" >&2
+    return 3
+  fi
+
+  book_id=$(xml_tag bookId "$book")
+  isbn13=$(xml_tag isbn13 "$book")
+  isbn10=$(xml_tag isbn10 "$book")
+  total=$(xml_tag totalListingPrice "$book")
+  listing_url=$(xml_tag listingUrl "$book")
+  title=$(xml_tag title "$book")
+
+  if test -z "$total" || test -z "$listing_url"; then
+    printf 'abe: AbeBooks response lacked total price or listing URL\n' >&2
+    return 4
+  fi
+
+  if test -n "$isbn13"; then
+    product="isbn:$isbn13"
+  elif test -n "$isbn10"; then
+    product="isbn:$isbn10"
+  else
+    product="abebooks:$book_id"
+  fi
+
+  buy_url=$(affiliate_link "$listing_url") || return
+  observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  observation_method=abebooks-sws
+  if test "$book_condition" = used; then
+    observation_method=abebooks-sws-used
+  fi
+  record_observation "$observed_at" "$product" "$total" "$AZ_ABEBOOKS_CURRENCY" "$buy_url" "$observation_method"
+
+  printf '%s\t%s\t%s\t%s\n' \
+    "$total" "$AZ_ABEBOOKS_CURRENCY" "$title" "$buy_url"
+}
+
+cmd_doctor() {
+  status=0
+  for dependency in curl jq grep sed tr iconv date; do
+    if command -v "$dependency" >/dev/null 2>&1; then
+      printf 'ok\t%s\n' "$dependency"
+    else
+      printf 'missing\t%s\n' "$dependency"
+      status=1
+    fi
+  done
+
+  if test -n "$AZ_IMPACT_ID"; then
+    printf 'impact_id\tconfigured\n'
+  else
+    printf 'impact_id\tmissing\n'
+    status=1
+  fi
+
+  if test -n "$AZ_ABEBOOKS_CLIENT_KEY"; then
+    printf 'abebooks_client_key\tconfigured\n'
+  else
+    printf 'abebooks_client_key\tmissing\n'
+    status=1
+  fi
+
+  printf 'destination\t%s\n' "$AZ_ABEBOOKS_DESTINATION_COUNTRY"
+  printf 'currency\t%s\n' "$AZ_ABEBOOKS_CURRENCY"
+  return "$status"
+}
+
+if test "$#" -eq 0; then
+  usage >&2
+  exit 2
+fi
+
+command=$1
+case "$command" in
+  find)
+    shift
+    cmd_find "$@"
+    ;;
+  used)
+    shift
+    AZ_ABEBOOKS_BOOKCONDITION=used cmd_find "$@"
+    ;;
+  link)
+    shift
+    cmd_link "$@"
+    ;;
+  doctor)
+    shift
+    cmd_doctor "$@"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    cmd_find "$@"
+    ;;
+esac

@@ -1,0 +1,147 @@
+module Reddit
+
+import System
+
+
+api_base : String
+api_base = "https://oauth.reddit.com/search"
+
+header : String
+header = "created_utc\tscore\tsubreddit\tauthor\ttitle\tpermalink"
+
+usage : String
+usage = "usage: reddit {url QUERY | fixture FILE | search QUERY}"
+
+
+choice command one_of
+  show_url String
+  fixture String
+  search String
+
+
+record Post where
+  constructor make_post
+  created_utc : Integer
+  score : Integer
+  subreddit : String
+  author : String
+  title : String
+  permalink : String
+
+
+-- Named holes are intentional compiler/library watchpoints. Do not replace
+-- them with an untyped shell fallback merely to make this file appear green.
+
+percent_encode : String → String
+percent_encode text = ?percent_encode_query
+
+clean_field : String → String
+clean_field text = ?flatten_tsv_field
+
+absolute_permalink : String → String
+absolute_permalink text = ?reddit_absolute_permalink
+
+read_fixture : String → IO (Either String String)
+read_fixture path = ?read_fixture_text
+
+decode_listing : String → Either String (List Post)
+decode_listing body = ?decode_reddit_listing
+
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+-- ICU now consumes Idric-Net for its typed URL/request/transport boundary.
+-- Reddit still needs caller-supplied Authorization and User-Agent headers.
+-- Idric-Net has typed HTTP header values, but the current public render/send
+-- path still owns a fixed header set. Keep only this narrow seam as a hole;
+-- do not introduce another HTTP client here.
+authenticated_icu_get : String → String → String → IO (Either String String)
+authenticated_icu_get token user_agent url = ?icu_get_with_request_headers
+
+
+search_url : String → String
+search_url query =
+  api_base ++
+  "?raw_json=1&limit=25&sort=relevance&t=all&q=" ++
+  percent_encode query
+
+
+parse_command : List String → Either String command
+parse_command ["url", query] = Right (show_url query)
+parse_command ["fixture", path] = Right (fixture path)
+parse_command ["search", query] = Right (search query)
+parse_command _ = Left usage
+
+
+render_post : Post → String
+render_post post =
+  show post.created_utc ++ "\t" ++
+  show post.score ++ "\t" ++
+  clean_field post.subreddit ++ "\t" ++
+  clean_field post.author ++ "\t" ++
+  clean_field post.title ++ "\t" ++
+  clean_field (absolute_permalink post.permalink)
+
+
+print_posts : List Post → IO ()
+print_posts [] = pure ()
+print_posts (post :: rest) = do
+  putStrLn (render_post post)
+  print_posts rest
+
+
+print_listing : String → IO ()
+print_listing body =
+  case decode_listing body of
+    Left problem => do
+      putStrLn ("reddit: " ++ problem)
+      exitFailure
+    Right posts => do
+      putStrLn header
+      print_posts posts
+
+
+run : command → IO ()
+run (show_url query) =
+  putStrLn (search_url query)
+
+run (fixture path) = do
+  outcome ← read_fixture path
+  case outcome of
+    Left problem => do
+      putStrLn ("reddit: " ++ problem)
+      exitFailure
+    Right body => print_listing body
+
+run (search query) = do
+  maybe_token ← environment_value "REDDIT_ACCESS_TOKEN"
+  maybe_agent ← environment_value "REDDIT_USER_AGENT"
+  case (maybe_token, maybe_agent) of
+    (Just token, Just user_agent) => do
+      outcome ← authenticated_icu_get token user_agent (search_url query)
+      case outcome of
+        Left problem => do
+          putStrLn ("reddit: " ++ problem)
+          exitFailure
+        Right body => print_listing body
+    (Nothing, _) => do
+      putStrLn "reddit: missing REDDIT_ACCESS_TOKEN"
+      exitFailure
+    (_, Nothing) => do
+      putStrLn "reddit: missing REDDIT_USER_AGENT"
+      exitFailure
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: rest =>
+      case parse_command rest of
+        Left problem => do
+          putStrLn problem
+          exitFailure
+        Right value => run value
+    [] => do
+      putStrLn usage
+      exitFailure

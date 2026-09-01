@@ -1,0 +1,67 @@
+module Nyt
+
+import System
+
+
+article_search : String
+article_search = "https://api.nytimes.com/svc/search/v2/articlesearch.json"
+
+usage : String
+usage = "usage: nyt {url QUERY | search QUERY | archive YEAR MONTH | top SECTION | wire SOURCE SECTION}"
+
+
+percent_encode : String → String
+percent_encode text = ?percent_encode_query
+
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+-- ICU is the transport. The missing piece here is Idriç process execution and
+-- capture, not an excuse to substitute curl.
+icu_get : String → IO ()
+icu_get url = ?run_icu_get_and_forward_stdout
+
+
+with_key : String → String → String
+with_key url key = url ++ (if contains '?' url then "&api-key=" else "?api-key=") ++ percent_encode key
+
+search_url : String → String → String
+search_url key query =
+  with_key (article_search ++ "?q=" ++ percent_encode query ++ "&sort=oldest") key
+
+archive_url : String → String → String → String
+archive_url key year month =
+  with_key ("https://api.nytimes.com/svc/archive/v1/" ++ year ++ "/" ++ month ++ ".json") key
+
+top_url : String → String → String
+top_url key section =
+  with_key ("https://api.nytimes.com/svc/topstories/v2/" ++ percent_encode section ++ ".json") key
+
+wire_url : String → String → String → String
+wire_url key source section =
+  with_key ("https://api.nytimes.com/svc/news/v3/content/" ++ percent_encode source ++ "/" ++ percent_encode section ++ ".json") key
+
+
+require_key : IO String
+require_key = do
+  value ← environment_value "NYT_API_KEY"
+  case value of
+    Just key => pure key
+    Nothing => do
+      putStrLn "nyt: missing NYT_API_KEY"
+      exitFailure
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  key ← require_key
+  case arguments of
+    _ :: "url" :: query :: [] => putStrLn (search_url key query)
+    _ :: "search" :: query :: [] => icu_get (search_url key query)
+    _ :: "archive" :: year :: month :: [] => icu_get (archive_url key year month)
+    _ :: "top" :: section :: [] => icu_get (top_url key section)
+    _ :: "wire" :: source :: section :: [] => icu_get (wire_url key source section)
+    _ => do
+      putStrLn usage
+      exitFailure

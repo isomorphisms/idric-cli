@@ -1,0 +1,44 @@
+module Guardian
+
+import System
+
+
+usage : String
+usage = "usage: guardian {url QUERY | search QUERY | tags QUERY | sections QUERY | editions QUERY | item ID}"
+
+percent_encode : String → String
+percent_encode text = ?percent_encode_query
+
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+icu_get : String → IO ()
+icu_get url = ?run_icu_get_and_forward_stdout
+
+with_key : String → String → String
+with_key url key = url ++ "&api-key=" ++ percent_encode key
+
+search_url : String → String → String
+search_url key query =
+  with_key ("https://content.guardianapis.com/search?q=" ++ percent_encode query ++ "&order-by=oldest") key
+
+
+main : IO ()
+main = do
+  maybe_key ← environment_value "GUARDIAN_API_KEY"
+  case maybe_key of
+    Nothing => do
+      putStrLn "guardian: missing GUARDIAN_API_KEY"
+      exitFailure
+    Just key => do
+      arguments ← getArgs
+      case arguments of
+        _ :: "url" :: query :: [] => putStrLn (search_url key query)
+        _ :: "search" :: query :: [] => icu_get (search_url key query)
+        _ :: "tags" :: query :: [] => icu_get (with_key ("https://content.guardianapis.com/tags?q=" ++ percent_encode query) key)
+        _ :: "sections" :: query :: [] => icu_get (with_key ("https://content.guardianapis.com/sections?q=" ++ percent_encode query) key)
+        _ :: "editions" :: query :: [] => icu_get (with_key ("https://content.guardianapis.com/editions?q=" ++ percent_encode query) key)
+        _ :: "item" :: item_id :: [] => icu_get (with_key ("https://content.guardianapis.com/" ++ item_id ++ "?show-fields=all") key)
+        _ => do
+          putStrLn usage
+          exitFailure
