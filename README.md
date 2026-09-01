@@ -39,7 +39,7 @@ response contracts.
 
 ## Networking
 
-Where these clients need networking, ICU/Idric-Net remains the intended transport boundary. ICU is deliberately **not** a Git submodule here and is not pinned by this repository.
+Where these clients need networking, ICU/Idric-Net remains the intended transport boundary. ICU is deliberately **not** a Git submodule or pinned runtime dependency here. The CourtListener acceptance workflow pins a reviewed ICU revision only so its receipt is reproducible.
 
 ## Tests
 

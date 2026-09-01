@@ -20,6 +20,10 @@ The required ICU response boundary is the existing API-client work that:
 - exits `10` for a non-2xx response;
 - uses its other nonzero outcomes for request/network/transport failures.
 
+ICU remains a moving external runtime dependency rather than a submodule. The
+acceptance workflow alone pins a reviewed ICU response-boundary revision so a
+given receipt can be reproduced.
+
 Set `ICU` to the ICU executable when it is not on `PATH`. If supplied,
 `COURTLISTENER_API_TOKEN` becomes `Authorization: Token ...` at the ICU header
 boundary. Tokens are never accepted as command arguments or stored here.

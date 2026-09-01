@@ -107,7 +107,7 @@ else
   fi
 fi
 
-if rg -n "curl|prim_send_http|prim_send_https|socket\(|openssl" src/CourtListener.idric \
+if grep -En "curl|prim_send_http|prim_send_https|socket\(|openssl" src/CourtListener.idric \
     >/tmp/courtlistener-second-http.out; then
   fail "courtlistener/no-second-http"
   sed 's/^/  /' /tmp/courtlistener-second-http.out
