@@ -19,7 +19,7 @@ run ["get", text] =
 run ["get", "-H", header_text, text] =
   case (parse_header header_text, parse_url text) of
     (Right value, Right target) => run_request (get target) [value]
-    _ => exitWith 2
+    _ => exitFailure
 run _ = exitFailure
 
 main : IO ()
