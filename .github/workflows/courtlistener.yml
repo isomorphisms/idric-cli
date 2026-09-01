@@ -50,14 +50,28 @@ jobs:
           cd .tools/Idric-Net
           ../Idric/build/exec/idris2 --install idric-net.ipkg
 
+      - name: Install contrib
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          cd .tools/Idric/libs/contrib
+          ../../build/exec/idris2 --install contrib.ipkg
+
       - name: Build ICU response adapter
         env:
           IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
-          IDRIS2_PATH: ${{ github.workspace }}/.tools/icu/src
         run: |
           make -C .tools/icu libicu_transport.so
-          .tools/Idric/build/exec/idris2 \
+          sed -i \
+            's/^modules =.*/modules = Http, TransportModel, Transport, Ingestion/' \
+            .tools/icu/icu.ipkg
+          sed -i '/^main =/d; /^executable =/d' .tools/icu/icu.ipkg
+          cd .tools/icu
+          ../Idric/build/exec/idris2 --install icu.ipkg
+          cd ../..
+          .tools/Idric/build/exec/idris2 -p icu \
             test/courtlistener/IcuRunner.idric -o icu-courtlistener
+          test -x build/exec/icu-courtlistener
 
       - name: Run deterministic and live receipts
         env:
