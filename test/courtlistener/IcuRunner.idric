@@ -1,0 +1,30 @@
+module Main
+
+import Http
+import System
+import Transport
+
+run_request : request → List request_header → IO ()
+run_request value headers = do
+  outcome ← send_request_with_headers value headers
+  case outcome of
+    Left _ => exitFailure
+    Right status => exitWith (cast status)
+
+run : List String → IO ()
+run ["get", text] =
+  case parse_url text of
+    Left _ => exitFailure
+    Right target => run_request (get target) []
+run ["get", "-H", header_text, text] =
+  case (parse_header header_text, parse_url text) of
+    (Right value, Right target) => run_request (get target) [value]
+    _ => exitFailure
+run _ = exitFailure
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: rest => run rest
+    [] => exitFailure
