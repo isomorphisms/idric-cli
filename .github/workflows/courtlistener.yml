@@ -1,0 +1,69 @@
+name: CourtListener through ICU
+
+on:
+  push:
+    branches:
+      - courtlistener-icu-foundation
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  courtlistener:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Idriç CLI
+        uses: actions/checkout@v4
+
+      - name: Checkout Idriç compiler
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/Idric
+          ref: 47557b43053c829d4f8aa1581007002b57f9c59f
+          path: .tools/Idric
+
+      - name: Checkout Idric-Net
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/Idric-Net
+          ref: 3e7643c8d8dd2a940d5b6dc96403ddae765402cd
+          path: .tools/Idric-Net
+
+      - name: Checkout ICU API-client boundary
+        uses: actions/checkout@v4
+        with:
+          repository: dilapidated-shed/icu
+          ref: 4ea624544d5b033bf83ab155e3783538e2ba1d58
+          path: .tools/icu
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chezscheme libssl-dev
+
+      - name: Build Idriç compiler
+        run: make -C .tools/Idric bootstrap SCHEME=scheme
+
+      - name: Install Idric-Net
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+        run: |
+          cd .tools/Idric-Net
+          ../Idric/build/exec/idris2 --install idric-net.ipkg
+
+      - name: Build ICU response adapter
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+          IDRIS2_PATH: ${{ github.workspace }}/.tools/icu/src
+        run: |
+          make -C .tools/icu libicu_transport.so
+          .tools/Idric/build/exec/idris2 \
+            test/courtlistener/IcuRunner.idric -o icu-courtlistener
+
+      - name: Run deterministic and live receipts
+        env:
+          COURTLISTENER_LIVE: 1
+          ICU: ${{ github.workspace }}/build/exec/icu-courtlistener
+          IDRIC: ${{ github.workspace }}/.tools/Idric/build/exec/idris2
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/bootstrap-build
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.tools/icu
+        run: sh test/courtlistener/check

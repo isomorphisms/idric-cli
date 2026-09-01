@@ -1,0 +1,62 @@
+module Main
+
+import CourtListener
+import System
+import System.File
+
+check : String → Bool → IO Bool
+check name True = do
+  putStrLn ("PASS\t" ++ name)
+  pure True
+check name False = do
+  putStrLn ("FAIL\t" ++ name)
+  pure False
+
+request_shape : Bool
+request_shape =
+  case courtlistener_query "Brown v. Board" of
+    Left _ => False
+    Right query =>
+      case build_search_request query of
+        Left _ => False
+        Right value =>
+          value.search_url.url_text ==
+            "https://www.courtlistener.com/api/rest/v4/search/?q=Brown%20v.%20Board&type=o"
+
+decoded_shape : String → Bool
+decoded_shape body =
+  case decode_search_response body of
+    Right [result] =>
+      result.case_name.case_name_text == "Brown v. Board of Education" &&
+      result.court == Just "Supreme Court of the United States" &&
+      result.date_filed == Just "1954-05-17" &&
+      result.citations == ["347 U.S. 483", "74 S. Ct. 686"] &&
+      result.absolute_url.url_text ==
+        "https://www.courtlistener.com/opinion/105221/brown-v-board-of-education/"
+    _ => False
+
+invalid_json_refused : String → Bool
+invalid_json_refused body =
+  case decode_search_response body of
+    Left invalid_json => True
+    _ => False
+
+non_search_refused : String → Bool
+non_search_refused body =
+  case decode_search_response body of
+    Left (invalid_search_response _) => True
+    _ => False
+
+main : IO ()
+main = do
+  Right fixture ← readFile "test/courtlistener/fixture/search.json"
+    | Left _ => exitFailure
+  Right broken ← readFile "test/courtlistener/fixture/invalid.json"
+    | Left _ => exitFailure
+  Right non_search ← readFile "test/courtlistener/fixture/non-search.json"
+    | Left _ => exitFailure
+  one ← check "CourtListener request shape" request_shape
+  two ← check "typed search result decode" (decoded_shape fixture)
+  three ← check "invalid JSON refused" (invalid_json_refused broken)
+  four ← check "valid non-search JSON refused" (non_search_refused non_search)
+  if one && two && three && four then pure () else exitFailure

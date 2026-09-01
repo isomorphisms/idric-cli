@@ -16,10 +16,26 @@ This repository is the consolidation point for the CLI/API-access programs that 
 - `Reddit.idric` — Reddit Data API checkpoint, with a synthetic fixture and manual receipt.
 - `Reuters.idric` — Reuters GraphQL checkpoint.
 - `Wayback.idric` — Internet Archive Wayback/CDX checkpoint.
+- `CourtListener.idric` — executable CourtListener v4 case-law search through ICU.
 
-The top-level `.idric` files are symbolic links to the canonical sources under `checkpoints/`, so the important source is visible without digging through directories.
+The top-level `.idric` files are symbolic links to their canonical sources, so the important source is visible without digging through directories.
 
 Some Idriç clients intentionally contain named holes for compiler/library boundaries that are not implemented yet. Keep those boundaries visible; do not make a client appear green by silently substituting another HTTP implementation.
+
+## CourtListener
+
+Build and run the first legal-search command with:
+
+```text
+make courtlistener IDRIC=/opt/Idric/build/exec/idris2
+edric courtlistener search "Brown v. Board of Education"
+```
+
+The installed ICU command owns HTTP and TLS. `ICU=/path/to/icu` selects it when
+it is not on `PATH`; `COURTLISTENER_API_TOKEN` supplies optional token
+authentication through ICU's checked header boundary. See
+[`docs/courtlistener.md`](docs/courtlistener.md) for the exact ownership and
+response contracts.
 
 ## Networking
 
@@ -30,3 +46,10 @@ Where these clients need networking, ICU/Idric-Net remains the intended transpor
 `make test` runs the existing Amazon and AbeBooks smoke tests. Reddit has a separate manual compiler checkpoint at `checkpoints/reddit/check`; it is not part of `make test` while named Idriç holes remain.
 
 See `PROVENANCE.md` for the source branches copied into this repository.
+
+The CourtListener receipt is separate because it requires the Idriç compiler,
+Idric-Net, contrib, and ICU:
+
+```text
+make courtlistener-check IDRIC=/opt/Idric/build/exec/idris2
+```
