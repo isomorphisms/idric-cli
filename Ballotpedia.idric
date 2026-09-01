@@ -1,0 +1,139 @@
+module Ballotpedia
+
+import Network.HTTP
+import Network.Transport
+import Network.URL
+import System
+import Transport
+
+
+api_base : String
+api_base = "https://api4.ballotpedia.org/data/elections_by_state"
+
+usage : String
+usage =
+  "usage:\n" ++
+  "  ballotpedia url STATE YYYY-MM-DD\n" ++
+  "  ballotpedia elections STATE YYYY-MM-DD\n" ++
+  "\nBALLOTPEDIA_API_KEY is required for elections."
+
+choice command one_of
+  show_url String String
+  list_elections String String
+
+record Candidate where
+  constructor make_candidate
+  candidate_id : String
+  person_id : String
+  name : String
+  party : String
+  office : String
+  district : String
+  profile_url : String
+
+-- These are narrow library/compiler watchpoints. The CLI stays Idriç-only:
+-- ICU owns HTTP; Ballotpedia owns the meaning of this request and response.
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+icu_get_with_headers : List HttpHeader → url → IO (Either String String)
+icu_get_with_headers headers target = ?icu_response_body_with_request_headers
+
+decode_candidates : String → Either String (List Candidate)
+decode_candidates body = ?decode_ballotpedia_candidates
+
+clean_field : String → String
+clean_field text = ?flatten_tsv_field
+
+valid_state : String → Bool
+valid_state state =
+  case unpack state of
+    [first, second] =>
+      first >= 'A' && first <= 'Z' &&
+      second >= 'A' && second <= 'Z'
+    _ => False
+
+digit : Char → Bool
+digit character = character >= '0' && character <= '9'
+
+valid_date : String → Bool
+valid_date date =
+  case unpack date of
+    [y1, y2, y3, y4, '-', m1, m2, '-', d1, d2] =>
+      digit y1 && digit y2 && digit y3 && digit y4 &&
+      digit m1 && digit m2 && digit d1 && digit d2
+    _ => False
+
+elections_url_text : String → String → String
+elections_url_text state date =
+  api_base ++ "?state=" ++ state ++ "&date=" ++ date
+
+parse_target : String → String → Either String url
+parse_target state date =
+  if not (valid_state state)
+    then Left "ballotpedia: STATE must be two uppercase ASCII letters"
+    else if not (valid_date date)
+      then Left "ballotpedia: date must have the form YYYY-MM-DD"
+      else parse_url (elections_url_text state date)
+
+parse_command : List String → Either String command
+parse_command ["url", state, date] = Right (show_url state date)
+parse_command ["elections", state, date] = Right (list_elections state date)
+parse_command _ = Left usage
+
+render_candidate : Candidate → String
+render_candidate candidate =
+  clean_field candidate.candidate_id ++ "\t" ++
+  clean_field candidate.person_id ++ "\t" ++
+  clean_field candidate.name ++ "\t" ++
+  clean_field candidate.party ++ "\t" ++
+  clean_field candidate.office ++ "\t" ++
+  clean_field candidate.district ++ "\t" ++
+  clean_field candidate.profile_url
+
+print_candidates : List Candidate → IO ()
+print_candidates [] = pure ()
+print_candidates (candidate :: rest) = do
+  putStrLn (render_candidate candidate)
+  print_candidates rest
+
+fail_with : String → IO ()
+fail_with problem = do
+  putStrLn problem
+  exitFailure
+
+run : command → IO ()
+run (show_url state date) =
+  case parse_target state date of
+    Left problem => fail_with problem
+    Right _ => putStrLn (elections_url_text state date)
+
+run (list_elections state date) =
+  case parse_target state date of
+    Left problem => fail_with problem
+    Right target => do
+      maybe_key ← environment_value "BALLOTPEDIA_API_KEY"
+      case maybe_key of
+        Nothing => fail_with "ballotpedia: missing BALLOTPEDIA_API_KEY"
+        Just key => do
+          outcome ← icu_get_with_headers
+            (header "x-api-key" key :: header "Accept" "application/json" :: [])
+            target
+          case outcome of
+            Left problem => fail_with ("ballotpedia: " ++ problem)
+            Right body =>
+              case decode_candidates body of
+                Left problem => fail_with ("ballotpedia: invalid response: " ++ problem)
+                Right candidates => do
+                  putStrLn "candidate_id\tperson_id\tname\tparty\toffice\tdistrict\tprofile_url"
+                  print_candidates candidates
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: rest =>
+      case parse_command rest of
+        Left problem => fail_with problem
+        Right value => run value
+    [] => fail_with usage
