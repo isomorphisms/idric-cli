@@ -1,0 +1,68 @@
+module Main
+
+import Ballotpedia
+import System
+import System.File
+
+check : String → Bool → IO Bool
+check name True = do
+  putStrLn ("PASS\t" ++ name)
+  pure True
+check name False = do
+  putStrLn ("FAIL\t" ++ name)
+  pure False
+
+request_shape : Bool
+request_shape =
+  elections_url_text "MI" "2026-11-03" ==
+    "https://api4.ballotpedia.org/data/elections_by_state?state=MI&election_date=2026-11-03&page=1"
+
+header_shape : Bool
+header_shape =
+  icu_arguments "icu" "test-key" "https://example.test/elections" ==
+    [ "icu"
+    , "get"
+    , "-H"
+    , "x-api-key: test-key"
+    , "-H"
+    , "Accept: application/json"
+    , "https://example.test/elections"
+    ]
+
+decoded_shape : String → Bool
+decoded_shape body =
+  case decode_candidates body of
+    Right [candidate] =>
+      candidate.person_id == Just "200" &&
+      candidate.name == "Ada Example" &&
+      candidate.parties == ["Independent"] &&
+      candidate.district == Just "Ward 1" &&
+      candidate.race == Just "City Council"
+    _ => False
+
+invalid_json_refused : String → Bool
+invalid_json_refused body =
+  case decode_candidates body of
+    Left invalid_json => True
+    _ => False
+
+wrong_envelope_refused : String → Bool
+wrong_envelope_refused body =
+  case decode_candidates body of
+    Left (invalid_response _) => True
+    _ => False
+
+clean_tsv_field : Bool
+clean_tsv_field = clean_field "one\ttwo\nthree\rfour" == "one two three four"
+
+main : IO ()
+main = do
+  Right fixture ← readFile "checkpoints/ballotpedia/fixture/elections_by_state.json"
+    | Left _ => exitFailure
+  one ← check "Ballotpedia request uses election_date and page" request_shape
+  two ← check "ICU owns checked caller headers" header_shape
+  three ← check "typed nested candidate decode" (decoded_shape fixture)
+  four ← check "invalid JSON refused" (invalid_json_refused "not-json")
+  five ← check "wrong response envelope refused" (wrong_envelope_refused "{\"data\":{}}")
+  six ← check "TSV separators flattened" clean_tsv_field
+  if one && two && three && four && five && six then pure () else exitFailure

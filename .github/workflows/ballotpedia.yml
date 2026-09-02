@@ -1,0 +1,140 @@
+name: Ballotpedia through ICU
+
+on:
+  push:
+    branches:
+      - ballotpedia-cli
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ballotpedia:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Idriç CLI
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Checkout Idriç compiler boundary
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric
+          ref: a8baedff0a536376a3c1411d3d2d3f0bc0194eb5
+          path: .tools/Idric
+
+      - name: Checkout Idric-Net
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: isomorphisms/Idric-Net
+          ref: 3e7643c8d8dd2a940d5b6dc96403ddae765402cd
+          path: .tools/Idric-Net
+
+      - name: Checkout checked ICU request boundary
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: dilapidated-shed/icu
+          ref: 2dd3b855786993feb662edfdd8d740f083f90c8d
+          path: .tools/icu
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends chezscheme libssl-dev
+
+      - name: Build Idriç and install typed dependencies
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+        run: |
+          make -C .tools/Idric/_ bootstrap SCHEME=scheme
+          cd .tools/Idric-Net
+          ../Idric/_/build/exec/idris2 --install idric-net.ipkg
+          cd ../Idric/_/libs/contrib
+          ../../build/exec/idris2 --install contrib.ipkg
+
+      - name: Build ICU and Ballotpedia
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+        run: |
+          make -C .tools/icu \
+            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
+          make ballotpedia-check \
+            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
+
+      - name: Start deterministic Ballotpedia-shaped server
+        run: |
+          cat > "$RUNNER_TEMP/ballotpedia-mock.py" <<'PY'
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+          import os
+
+          fixture = Path(os.environ["GITHUB_WORKSPACE"]) / \
+              "checkpoints/ballotpedia/fixture/elections_by_state.json"
+          body = fixture.read_bytes()
+
+          class Handler(BaseHTTPRequestHandler):
+              protocol_version = "HTTP/1.0"
+
+              def log_message(self, format, *args):
+                  pass
+
+              def do_GET(self):
+                  expected = "/data/elections_by_state?state=MI&election_date=2026-11-03&page=1"
+                  if self.path != expected:
+                      self.send_error(400, "wrong request target")
+                      return
+                  if self.headers.get("x-api-key") != "test-key":
+                      self.send_error(401, "wrong API key")
+                      return
+                  if self.headers.get("Accept") != "application/json":
+                      self.send_error(400, "wrong Accept header")
+                      return
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+          ThreadingHTTPServer(("127.0.0.1", 18083), Handler).serve_forever()
+          PY
+          python3 "$RUNNER_TEMP/ballotpedia-mock.py" \
+            > "$RUNNER_TEMP/ballotpedia-mock.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/ballotpedia-mock.pid"
+          sleep 1
+
+      - name: Prove request headers, captured body, typed JSON, and TSV
+        env:
+          BALLOTPEDIA_API_KEY: test-key
+          BALLOTPEDIA_API_BASE: http://127.0.0.1:18083/data/elections_by_state
+          ICU: ${{ github.workspace }}/.tools/icu/build/exec/icu
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.tools/icu
+        run: |
+          ./build/exec/ballotpedia elections MI 2026-11-03 \
+            > "$RUNNER_TEMP/ballotpedia.tsv"
+          cmp checkpoints/ballotpedia/fixture/expected.tsv \
+            "$RUNNER_TEMP/ballotpedia.tsv"
+
+          if env -u BALLOTPEDIA_API_KEY \
+              ./build/exec/ballotpedia elections MI 2026-11-03 \
+              > "$RUNNER_TEMP/missing-key.out" \
+              2> "$RUNNER_TEMP/missing-key.err"; then
+            echo 'missing API key unexpectedly succeeded' >&2
+            exit 1
+          fi
+          test ! -s "$RUNNER_TEMP/missing-key.out"
+          grep -F 'missing BALLOTPEDIA_API_KEY' "$RUNNER_TEMP/missing-key.err"
+
+          if BALLOTPEDIA_API_KEY= \
+              ./build/exec/ballotpedia elections MI 2026-11-03 \
+              > "$RUNNER_TEMP/empty-key.out" \
+              2> "$RUNNER_TEMP/empty-key.err"; then
+            echo 'empty API key unexpectedly succeeded' >&2
+            exit 1
+          fi
+          test ! -s "$RUNNER_TEMP/empty-key.out"
+          grep -F 'BALLOTPEDIA_API_KEY is empty' "$RUNNER_TEMP/empty-key.err"
+
+      - name: Show mock log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/ballotpedia-mock.log" 2>/dev/null || true

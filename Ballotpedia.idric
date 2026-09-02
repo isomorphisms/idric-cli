@@ -1,11 +1,11 @@
 module Ballotpedia
 
-import Network.HTTP
-import Network.Transport
+import Language.JSON
 import Network.URL
 import System
-import Transport
+import System.File
 
+%default total
 
 api_base : String
 api_base = "https://api4.ballotpedia.org/data/elections_by_state"
@@ -17,34 +17,34 @@ usage =
   "  ballotpedia elections STATE YYYY-MM-DD\n" ++
   "\nBALLOTPEDIA_API_KEY is required for elections."
 
+public export
 choice command one_of
   show_url String String
   list_elections String String
 
+public export
 record Candidate where
-  constructor make_candidate
-  candidate_id : String
-  person_id : String
+  constructor MakeCandidate
+  person_id : Maybe String
   name : String
-  party : String
-  office : String
-  district : String
-  profile_url : String
+  parties : List String
+  district : Maybe String
+  race : Maybe String
 
--- These are narrow library/compiler watchpoints. The CLI stays Idriç-only:
--- ICU owns HTTP; Ballotpedia owns the meaning of this request and response.
-environment_value : String → IO (Maybe String)
-environment_value name = ?read_environment_value
+public export
+choice ballotpedia_failure one_of
+  invalid_request String
+  missing_api_key
+  empty_api_key
+  network_failure Int
+  http_failure String
+  invalid_json
+  invalid_response String
 
-icu_get_with_headers : List HttpHeader → url → IO (Either String String)
-icu_get_with_headers headers target = ?icu_response_body_with_request_headers
+digit : Char → Bool
+digit character = character >= '0' && character <= '9'
 
-decode_candidates : String → Either String (List Candidate)
-decode_candidates body = ?decode_ballotpedia_candidates
-
-clean_field : String → String
-clean_field text = ?flatten_tsv_field
-
+public export
 valid_state : String → Bool
 valid_state state =
   case unpack state of
@@ -53,9 +53,7 @@ valid_state state =
       second >= 'A' && second <= 'Z'
     _ => False
 
-digit : Char → Bool
-digit character = character >= '0' && character <= '9'
-
+public export
 valid_date : String → Bool
 valid_date date =
   case unpack date of
@@ -64,32 +62,182 @@ valid_date date =
       digit m1 && digit m2 && digit d1 && digit d2
     _ => False
 
+public export
 elections_url_text : String → String → String
 elections_url_text state date =
-  api_base ++ "?state=" ++ state ++ "&date=" ++ date
+  api_base ++ "?state=" ++ state ++ "&election_date=" ++ date ++ "&page=1"
 
-parse_target : String → String → Either String url
-parse_target state date =
+elections_url_from_base : String → String → String → String
+elections_url_from_base base state date =
+  base ++ "?state=" ++ state ++ "&election_date=" ++ date ++ "&page=1"
+
+parse_target_text : String → String → String → Either ballotpedia_failure url
+parse_target_text target_text state date =
   if not (valid_state state)
-    then Left "ballotpedia: STATE must be two uppercase ASCII letters"
+    then Left (invalid_request "STATE must be two uppercase ASCII letters")
     else if not (valid_date date)
-      then Left "ballotpedia: date must have the form YYYY-MM-DD"
-      else parse_url (elections_url_text state date)
+      then Left (invalid_request "date must have the form YYYY-MM-DD")
+      else case parse_url target_text of
+        Left problem => Left (invalid_request problem)
+        Right target => Right target
 
+public export
+parse_target : String → String → Either ballotpedia_failure url
+parse_target state date =
+  parse_target_text (elections_url_text state date) state date
+
+public export
 parse_command : List String → Either String command
 parse_command ["url", state, date] = Right (show_url state date)
 parse_command ["elections", state, date] = Right (list_elections state date)
 parse_command _ = Left usage
 
+object_field : String → List (String, JSON) → Maybe JSON
+object_field wanted [] = Nothing
+object_field wanted ((field_name, value) :: rest) =
+  if wanted == field_name then Just value else object_field wanted rest
+
+required_object : String → List (String, JSON) → Either String (List (String, JSON))
+required_object field_name object =
+  case object_field field_name object of
+    Just (JObject value) => Right value
+    Just _ => Left (field_name ++ " is not an object")
+    Nothing => Left ("missing " ++ field_name)
+
+required_string : String → List (String, JSON) → Either String String
+required_string field_name object =
+  case object_field field_name object of
+    Just (JString value) => Right value
+    Just _ => Left (field_name ++ " is not a string")
+    Nothing => Left ("missing " ++ field_name)
+
+optional_string : String → List (String, JSON) → Maybe String
+optional_string field_name object =
+  case object_field field_name object of
+    Just (JString value) => Just value
+    _ => Nothing
+
+optional_identifier : String → List (String, JSON) → Maybe String
+optional_identifier field_name object =
+  case object_field field_name object of
+    Just (JString value) => Just value
+    Just (JNumber value) => Just (show value)
+    _ => Nothing
+
+optional_array : String → List (String, JSON) → Either String (List JSON)
+optional_array field_name object =
+  case object_field field_name object of
+    Nothing => Right []
+    Just JNull => Right []
+    Just (JArray values) => Right values
+    Just _ => Left (field_name ++ " is not an array")
+
+party_name : JSON → Either String String
+party_name (JObject object) = required_string "name" object
+party_name _ = Left "party affiliation is not an object"
+
+party_names : List JSON → Either String (List String)
+party_names [] = Right []
+party_names (value :: rest) = do
+  name ← party_name value
+  remaining ← party_names rest
+  pure (name :: remaining)
+
+decode_candidate : Maybe String → Maybe String → JSON → Either String Candidate
+decode_candidate district_name race_name (JObject object) = do
+  person ← required_object "person" object
+  candidate_name ← required_string "name" person
+  affiliations ← optional_array "party_affiliation" object
+  affiliation_names ← party_names affiliations
+  pure
+    (MakeCandidate
+      (optional_identifier "id" person)
+      candidate_name
+      affiliation_names
+      district_name
+      race_name)
+decode_candidate _ _ _ = Left "candidate is not an object"
+
+decode_candidate_values :
+  Maybe String → Maybe String → List JSON → Either String (List Candidate)
+decode_candidate_values _ _ [] = Right []
+decode_candidate_values district_name race_name (value :: rest) = do
+  candidate ← decode_candidate district_name race_name value
+  remaining ← decode_candidate_values district_name race_name rest
+  pure (candidate :: remaining)
+
+decode_race : Maybe String → JSON → Either String (List Candidate)
+decode_race district_name (JObject object) = do
+  candidates ← optional_array "candidates" object
+  decode_candidate_values district_name (optional_string "name" object) candidates
+decode_race _ _ = Left "race is not an object"
+
+decode_races : Maybe String → List JSON → Either String (List Candidate)
+decode_races _ [] = Right []
+decode_races district_name (value :: rest) = do
+  candidates ← decode_race district_name value
+  remaining ← decode_races district_name rest
+  pure (candidates ++ remaining)
+
+decode_district : JSON → Either String (List Candidate)
+decode_district (JObject object) = do
+  races ← optional_array "races" object
+  decode_races (optional_string "name" object) races
+decode_district _ = Left "district is not an object"
+
+decode_districts : List JSON → Either String (List Candidate)
+decode_districts [] = Right []
+decode_districts (value :: rest) = do
+  candidates ← decode_district value
+  remaining ← decode_districts rest
+  pure (candidates ++ remaining)
+
+decode_root : JSON → Either String (List Candidate)
+decode_root (JObject root) = do
+  data_object ← required_object "data" root
+  case object_field "districts" data_object of
+    Just (JArray districts) => decode_districts districts
+    Just _ => Left "districts is not an array"
+    Nothing => Left "missing districts"
+decode_root _ = Left "response root is not an object"
+
+public export
+decode_candidates : String → Either ballotpedia_failure (List Candidate)
+decode_candidates body =
+  case Language.JSON.parse body of
+    Nothing => Left invalid_json
+    Just value =>
+      case decode_root value of
+        Left problem => Left (invalid_response problem)
+        Right candidates => Right candidates
+
+clean_character : Char → Char
+clean_character '\t' = ' '
+clean_character '\n' = ' '
+clean_character '\r' = ' '
+clean_character character = character
+
+public export
+clean_field : String → String
+clean_field text = pack (map clean_character (unpack text))
+
+join_with : String → List String → String
+join_with _ [] = ""
+join_with _ [value] = value
+join_with separator (value :: rest) = value ++ separator ++ join_with separator rest
+
+show_optional : Maybe String → String
+show_optional Nothing = ""
+show_optional (Just value) = value
+
+public export
 render_candidate : Candidate → String
 render_candidate candidate =
-  clean_field candidate.candidate_id ++ "\t" ++
-  clean_field candidate.person_id ++ "\t" ++
+  clean_field (show_optional candidate.person_id) ++ "\t" ++
   clean_field candidate.name ++ "\t" ++
-  clean_field candidate.party ++ "\t" ++
-  clean_field candidate.office ++ "\t" ++
-  clean_field candidate.district ++ "\t" ++
-  clean_field candidate.profile_url
+  clean_field (join_with "; " candidate.parties) ++ "\t" ++
+  clean_field (show_optional candidate.district) ++ "\t" ++
+  clean_field (show_optional candidate.race)
 
 print_candidates : List Candidate → IO ()
 print_candidates [] = pure ()
@@ -97,37 +245,78 @@ print_candidates (candidate :: rest) = do
   putStrLn (render_candidate candidate)
   print_candidates rest
 
-fail_with : String → IO ()
-fail_with problem = do
-  putStrLn problem
-  exitFailure
+public export
+icu_arguments : String → String → String → List String
+icu_arguments executable api_key target_url =
+  [ executable
+  , "get"
+  , "-H"
+  , "x-api-key: " ++ api_key
+  , "-H"
+  , "Accept: application/json"
+  , target_url
+  ]
 
-run : command → IO ()
-run (show_url state date) =
-  case parse_target state date of
-    Left problem => fail_with problem
-    Right _ => putStrLn (elections_url_text state date)
-
-run (list_elections state date) =
-  case parse_target state date of
-    Left problem => fail_with problem
-    Right target => do
+covering
+perform_elections : String → String → IO (Either ballotpedia_failure (List Candidate))
+perform_elections state date = do
+  maybe_base ← environment_value "BALLOTPEDIA_API_BASE"
+  let base = case maybe_base of
+        Just configured => configured
+        Nothing => api_base
+  let target_text = elections_url_from_base base state date
+  case parse_target_text target_text state date of
+    Left problem => pure (Left problem)
+    Right _ => do
       maybe_key ← environment_value "BALLOTPEDIA_API_KEY"
       case maybe_key of
-        Nothing => fail_with "ballotpedia: missing BALLOTPEDIA_API_KEY"
-        Just key => do
-          outcome ← icu_get_with_headers
-            (header "x-api-key" key :: header "Accept" "application/json" :: [])
-            target
-          case outcome of
-            Left problem => fail_with ("ballotpedia: " ++ problem)
-            Right body =>
-              case decode_candidates body of
-                Left problem => fail_with ("ballotpedia: invalid response: " ++ problem)
-                Right candidates => do
-                  putStrLn "candidate_id\tperson_id\tname\tparty\toffice\tdistrict\tprofile_url"
-                  print_candidates candidates
+        Nothing => pure (Left missing_api_key)
+        Just "" => pure (Left empty_api_key)
+        Just api_key => do
+          maybe_icu ← environment_value "ICU"
+          let executable = case maybe_icu of
+                Just path => path
+                Nothing => "icu"
+          (body, status) ← run
+            (icu_arguments executable api_key target_text)
+          if status == 0
+            then pure (decode_candidates body)
+            else if status == 10
+              then pure (Left (http_failure body))
+              else pure (Left (network_failure status))
 
+public export
+render_failure : ballotpedia_failure → String
+render_failure (invalid_request problem) = "ballotpedia: invalid request: " ++ problem
+render_failure missing_api_key = "ballotpedia: missing BALLOTPEDIA_API_KEY"
+render_failure empty_api_key = "ballotpedia: BALLOTPEDIA_API_KEY is empty"
+render_failure (network_failure status) =
+  "ballotpedia: ICU network/transport failure (exit " ++ show status ++ ")"
+render_failure (http_failure _) = "ballotpedia: Ballotpedia returned a non-2xx HTTP response"
+render_failure invalid_json = "ballotpedia: refused invalid JSON"
+render_failure (invalid_response problem) =
+  "ballotpedia: refused unexpected response: " ++ problem
+
+fail_with : String → IO ()
+fail_with problem = do
+  _ ← fPutStrLn stderr problem
+  exitFailure
+
+covering
+run_command : command → IO ()
+run_command (show_url state date) =
+  case parse_target state date of
+    Left problem => fail_with (render_failure problem)
+    Right _ => putStrLn (elections_url_text state date)
+run_command (list_elections state date) = do
+  outcome ← perform_elections state date
+  case outcome of
+    Left problem => fail_with (render_failure problem)
+    Right candidates => do
+      putStrLn "person_id\tname\tparties\tdistrict\trace"
+      print_candidates candidates
+
+covering
 main : IO ()
 main = do
   arguments ← getArgs
@@ -135,5 +324,5 @@ main = do
     _ :: rest =>
       case parse_command rest of
         Left problem => fail_with problem
-        Right value => run value
+        Right value => run_command value
     [] => fail_with usage

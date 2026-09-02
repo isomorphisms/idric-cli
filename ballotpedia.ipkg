@@ -1,0 +1,9 @@
+package ballotpedia
+
+version = 0.1.0
+depends = contrib, idric_net
+sourcedir = "."
+
+modules = Ballotpedia
+main = Ballotpedia
+executable = ballotpedia

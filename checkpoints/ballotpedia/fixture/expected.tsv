@@ -1,2 +1,2 @@
-candidate_id	person_id	name	party	office	district	profile_url
-100	200	Ada Example	Independent	City Council	Ward 1	https://ballotpedia.org/Ada_Example
+person_id	name	parties	district	race
+200	Ada Example	Independent	Ward 1	City Council

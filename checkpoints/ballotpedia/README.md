@@ -14,23 +14,56 @@ header.
 Ownership stays explicit:
 
 ```text
-arguments → Idriç validation → Ballotpedia request → ICU → HTTPS
-          → ICU response → Idriç decoding → typed candidates → TSV
+arguments → Idriç validation → ICU command → HTTPS
+          → captured response body → Idriç JSON decoding → typed candidates → TSV
 ```
 
-## Current execution boundary
+The request uses Ballotpedia's `election_date` parameter and explicitly asks
+for page 1. The response decoder follows the available nested shape:
 
-This is an honest compiler/library checkpoint, not a shell-backed client.
-The checked ICU path currently accepts only its fixed request headers and
-returns transport status while streaming the HTTP response. Therefore the
-source retains three named holes:
+```text
+data → districts → races → candidates → person / party_affiliation
+```
 
-- environment lookup;
-- ICU caller-supplied headers plus captured response body;
-- Ballotpedia JSON decoding.
+The earlier checkpoint's `date` parameter and flat `data.candidates` fixture
+were not supported by the available client implementations and have been
+removed.
 
-The `url` command and request validation do not need a key and define the
-first executable acceptance surface. Do not fill the holes with curl,
-Python, JavaScript, or another HTTP implementation. The next real step is
-to extend the typed ICU interface, then discharge the decoder against the
-synthetic fixture in this directory.
+## Re-evaluated boundaries
+
+The three original named holes are no longer one undifferentiated block:
+
+- Idriç #64 supplies `environment_value`; the later source-layout change
+  accidentally dropped it from the buildable library tree, so the acceptance
+  workflow pins the narrow restoration until that regression is merged.
+- ICU #13 accepts checked repeatable `-H` values, writes the response body to
+  stdout, and assigns distinct nonzero outcomes to HTTP and transport failure.
+  Ballotpedia invokes that command through `System.run`; there is no second
+  HTTP implementation here.
+- `Language.JSON` performs the parse, and the Ballotpedia module projects the
+  nested fixture into a typed candidate record before rendering TSV.
+
+The remaining boundaries are specific rather than generic library holes:
+
+- page 1 is implemented; following every Ballotpedia page is not;
+- the nested synthetic fixture covers person name/id, party affiliation, and
+  optional district/race names, but a captured live response fixture is still
+  needed before claiming the rest of Ballotpedia's paid response contract;
+- no live receipt runs without an explicitly supplied Ballotpedia API key.
+
+`BALLOTPEDIA_API_BASE` exists for deterministic local receipts. Normal use
+leaves it unset and uses `https://api4.ballotpedia.org/data/elections_by_state`.
+
+The request parameter, pagination, and `data.districts` envelope are also
+consistent with the available Ballotpedia Python client implementation. A
+separate public adapter corroborates the nested races, candidates, person, and
+party-affiliation path. Neither source substitutes for a retained live fixture.
+
+The `url` command and deterministic fixture receipt do not need a key. The
+production path remains Idriç plus ICU; curl, Python, JavaScript, and SDKs are
+not fallback transports.
+
+Sources used to correct the checkpoint:
+
+- <https://github.com/Mwithalii/mobile/blob/46feafb8b14b470d190584ca14cb03d196ee6406/mobile/Lib/site-packages/ballotpedia/api.py>
+- <https://github.com/cliffpyles/Hops/blob/606a799d0404f362bc2e560048203baedd9db7e4/pipelines/sources/ballotpedia/politicians.py>

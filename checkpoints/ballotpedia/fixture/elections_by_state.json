@@ -1,14 +1,25 @@
 {
+  "success": true,
   "data": {
-    "candidates": [
+    "districts": [
       {
-        "candidate_id": "100",
-        "person_id": "200",
-        "name": "Ada Example",
-        "party": "Independent",
-        "office": "City Council",
-        "district": "Ward 1",
-        "url": "https://ballotpedia.org/Ada_Example"
+        "name": "Ward 1",
+        "races": [
+          {
+            "name": "City Council",
+            "candidates": [
+              {
+                "person": {
+                  "id": "200",
+                  "name": "Ada Example"
+                },
+                "party_affiliation": [
+                  { "name": "Independent" }
+                ]
+              }
+            ]
+          }
+        ]
       }
     ]
   }
