@@ -45,6 +45,9 @@ The three original named holes are no longer one undifferentiated block:
 
 The remaining boundaries are specific rather than generic library holes:
 
+- ICU's current executable interface carries caller header values in the
+  child-process argument vector; a non-argv credential channel is not yet
+  available to this CLI;
 - page 1 is implemented; following every Ballotpedia page is not;
 - the nested synthetic fixture covers person name/id, party affiliation, and
   optional district/race names, but a captured live response fixture is still
