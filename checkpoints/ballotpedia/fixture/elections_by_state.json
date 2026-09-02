@@ -1,0 +1,26 @@
+{
+  "success": true,
+  "data": {
+    "districts": [
+      {
+        "name": "Ward 1",
+        "races": [
+          {
+            "name": "City Council",
+            "candidates": [
+              {
+                "person": {
+                  "id": "200",
+                  "name": "Ada Example"
+                },
+                "party_affiliation": [
+                  { "name": "Independent" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+#!/bin/sh
+
+set -u
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
+IDRIC=${IDRIC:-idris2}
+
+if ! command -v "$IDRIC" >/dev/null 2>&1 && ! test -x "$IDRIC"; then
+  printf 'SKIP\tballotpedia/idric (not found: %s)\n' "$IDRIC"
+  exit 0
+fi
+
+cd "$ROOT" || exit 1
+
+"$IDRIC" --build ballotpedia.ipkg
+IDRIS2_PATH="$ROOT" "$IDRIC" -p contrib -p idric_net \
+  test/ballotpedia/BallotpediaTests.idric -o ballotpedia-tests
+"$ROOT/build/exec/ballotpedia-tests"
