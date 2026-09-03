@@ -87,8 +87,16 @@ if ! available "$IDRIC"; then
   exit 0
 fi
 
-if "$IDRIC" --check "$HERE/idric/Handshake.idric" \
-    >"$TMP/idric" 2>"$TMP/idric.err"; then
+# Current Idriç checks the declared module name against the source path. Copy
+# the exact checkpoint source into an isolated module root so `module Handshake`
+# is checked as Handshake.idric rather than as a nested absolute path.
+cp "$HERE/idric/Handshake.idric" "$TMP/Handshake.idric"
+
+if (
+  cd "$TMP"
+  "$IDRIC" --check Handshake.idric \
+    >"$TMP/idric" 2>"$TMP/idric.err"
+); then
   pass 'idric/check'
 else
   fail 'idric/check'
@@ -98,7 +106,7 @@ fi
 
 if (
   cd "$TMP"
-  "$IDRIC" "$HERE/idric/Handshake.idric" -o handshake \
+  "$IDRIC" Handshake.idric -o handshake \
     >"$TMP/build.log" 2>"$TMP/build.err"
 ); then
   pass 'idric/build'
@@ -168,7 +176,7 @@ expect_failure_output \
 
 expect_failure_output \
   'transport/explicit-gap' \
-  'handshake: live EDU GET pending ICU/Idric-Net caller-header + response-body API' \
+  'handshake: live EDU GET pending ICU credential-safe x-api-key redirect policy (icu#19)' \
   env HANDSHAKE_EDU_API_KEY=synthetic "$PROGRAM" jobs
 
 exit "$status"
