@@ -39,4 +39,5 @@ jobs:
         env:
           IDRIC: ${{ github.workspace }}/.tools/Idric/_/build/exec/idris2
           IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+          IDRIS2_PATH: ${{ github.workspace }}/.tools/Idric/_/libs/contrib/build/ttc
         run: bash checkpoints/handshake/check
