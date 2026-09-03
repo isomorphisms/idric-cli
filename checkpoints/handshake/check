@@ -1,7 +1,8 @@
 #!/usr/bin/env ysh
 
-# Manual Idriç Handshake checkpoint runner.
-# Deliberately not part of the root make test while named holes remain.
+# Idriç Handshake checkpoint runner.
+# The offline surfaces are executable; the live network command must fail
+# closed at the one documented ICU/Idric-Net dependency boundary.
 
 set -u
 
@@ -41,6 +42,46 @@ show_diagnostics() {
   done
 }
 
+expect_success_output() {
+  label=$1
+  expected=$2
+  shift 2
+
+  if "$@" >"$TMP/actual" 2>"$TMP/actual.err"; then
+    printf '%s\n' "$expected" >"$TMP/expected"
+    if cmp -s "$TMP/expected" "$TMP/actual"; then
+      pass "$label"
+    else
+      fail "$label"
+      diff -u "$TMP/expected" "$TMP/actual" || true
+      show_diagnostics "$TMP/actual.err"
+    fi
+  else
+    fail "$label"
+    show_diagnostics "$TMP/actual" "$TMP/actual.err"
+  fi
+}
+
+expect_failure_output() {
+  label=$1
+  expected=$2
+  shift 2
+
+  if "$@" >"$TMP/actual" 2>"$TMP/actual.err"; then
+    fail "$label"
+    show_diagnostics "$TMP/actual" "$TMP/actual.err"
+  else
+    printf '%s\n' "$expected" >"$TMP/expected"
+    if cmp -s "$TMP/expected" "$TMP/actual"; then
+      pass "$label"
+    else
+      fail "$label"
+      diff -u "$TMP/expected" "$TMP/actual" || true
+      show_diagnostics "$TMP/actual.err"
+    fi
+  fi
+}
+
 if ! available "$IDRIC"; then
   skip "idric (not found: $IDRIC)"
   exit 0
@@ -52,6 +93,82 @@ if "$IDRIC" --check "$HERE/idric/Handshake.idric" \
 else
   fail 'idric/check'
   show_diagnostics "$TMP/idric" "$TMP/idric.err"
+  exit "$status"
 fi
+
+if (
+  cd "$TMP"
+  "$IDRIC" "$HERE/idric/Handshake.idric" -o handshake \
+    >"$TMP/build.log" 2>"$TMP/build.err"
+); then
+  pass 'idric/build'
+else
+  fail 'idric/build'
+  show_diagnostics "$TMP/build.log" "$TMP/build.err"
+  exit "$status"
+fi
+
+PROGRAM="$TMP/build/exec/handshake"
+if test ! -x "$PROGRAM"; then
+  fail 'idric/executable'
+  find "$TMP" -maxdepth 4 -type f -print | sed 's/^/  /'
+  exit "$status"
+fi
+pass 'idric/executable'
+
+expect_success_output \
+  'url/jobs' \
+  'https://edu-api.joinhandshake.com/v1/jobs?page_size=100' \
+  "$PROGRAM" url jobs
+
+expect_success_output \
+  'url/roles' \
+  'https://edu-api.joinhandshake.com/v1/job_role_groups?page_size=100' \
+  "$PROGRAM" url roles
+
+expect_success_output \
+  'public/decimal' \
+  'https://app.joinhandshake.com/public/jobs/123456' \
+  "$PROGRAM" public 123456
+
+expect_failure_output \
+  'public/reject-nondecimal' \
+  'handshake: JOB_ID must contain decimal digits only' \
+  "$PROGRAM" public 12x
+
+if "$PROGRAM" fixture-jobs "$HERE/fixture/jobs.json" \
+    >"$TMP/jobs.tsv" 2>"$TMP/jobs.err" &&
+   cmp -s "$HERE/fixture/jobs.expected.tsv" "$TMP/jobs.tsv"; then
+  pass 'fixture/jobs'
+else
+  fail 'fixture/jobs'
+  diff -u "$HERE/fixture/jobs.expected.tsv" "$TMP/jobs.tsv" || true
+  show_diagnostics "$TMP/jobs.err"
+fi
+
+if "$PROGRAM" fixture-roles "$HERE/fixture/job_role_groups.json" \
+    >"$TMP/roles.tsv" 2>"$TMP/roles.err" &&
+   cmp -s "$HERE/fixture/job_role_groups.expected.tsv" "$TMP/roles.tsv"; then
+  pass 'fixture/roles'
+else
+  fail 'fixture/roles'
+  diff -u "$HERE/fixture/job_role_groups.expected.tsv" "$TMP/roles.tsv" || true
+  show_diagnostics "$TMP/roles.err"
+fi
+
+expect_failure_output \
+  'environment/missing' \
+  'handshake: missing HANDSHAKE_EDU_API_KEY' \
+  env -u HANDSHAKE_EDU_API_KEY "$PROGRAM" jobs
+
+expect_failure_output \
+  'environment/empty' \
+  'handshake: HANDSHAKE_EDU_API_KEY is empty' \
+  env HANDSHAKE_EDU_API_KEY= "$PROGRAM" jobs
+
+expect_failure_output \
+  'transport/explicit-gap' \
+  'handshake: live EDU GET pending ICU/Idric-Net caller-header + response-body API' \
+  env HANDSHAKE_EDU_API_KEY=synthetic "$PROGRAM" jobs
 
 exit "$status"
