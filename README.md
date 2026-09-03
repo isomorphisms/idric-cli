@@ -28,6 +28,6 @@ Where these clients need networking, ICU/Idric-Net remains the intended transpor
 
 ## Tests
 
-`make test` runs the existing Amazon and AbeBooks smoke tests. Reddit and Handshake have separate manual compiler checkpoints under `checkpoints/`; they are not part of `make test` while named Idriç holes remain.
+`make test` runs the existing Amazon and AbeBooks smoke tests. Reddit and Handshake have separate compiler checkpoints under `checkpoints/`. Handshake's offline path is implemented and exercised against current Idriç; only its live EDU request remains fail-closed on ICU credential-sensitive `x-api-key` redirect support (ICU #19).
 
 See `PROVENANCE.md` for the source branches copied into this repository.
