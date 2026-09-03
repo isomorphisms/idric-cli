@@ -222,14 +222,16 @@ valid_job_id text =
 
 
 -- Genuine remaining dependency boundary:
--- current merged ICU/Idric-Net cannot both attach a caller-supplied x-api-key
--- header and return the response body to this caller. Fail closed until that
--- shared transport surface exists; do not substitute curl/Python/browser state.
+-- merged ICU/Idric-Net does not yet expose the complete caller-header + body
+-- capture path. Pending ICU #13 stacked on #12 has those mechanics, but its
+-- cross-origin redirect policy strips only Authorization/Cookie credentials;
+-- x-api-key remains an ordinary header. Fail closed until callers can mark an
+-- arbitrary header credential-sensitive (ICU #19).
 edu_icu_get : String → String → IO (Either String String)
 edu_icu_get api_key url =
   pure
     (Left
-      "live EDU GET pending ICU/Idric-Net caller-header + response-body API")
+      "live EDU GET pending ICU credential-safe x-api-key redirect policy (icu#19)")
 
 
 endpoint_url : endpoint → String
