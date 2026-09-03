@@ -71,11 +71,13 @@ fixture/job_role_groups.json
 fixture/job_role_groups.expected.tsv
 ```
 
+The jobs fixture includes escaped tab/newline characters in a title while its expected TSV contains spaces, so the receipt exercises field cleanup as well as JSON decoding.
+
 ### `jobs` / `roles`
 
 Read `HANDSHAKE_EDU_API_KEY`, perform one ICU/Idric-Net GET with the required `x-api-key` header, decode the response, and emit the same TSV shape as the fixtures.
 
-The live transport call currently fails closed because the merged ICU/Idric-Net surface cannot yet both attach caller-supplied headers and return the response body to the Idriç caller.
+The live transport call currently fails closed at the credential-policy boundary described below.
 
 This first slice intentionally does not paginate. Handshake documents cursor pagination (`next_cursor` / `page_cursor`); pagination should be the next network-level checkpoint after a single live page works.
 
@@ -91,7 +93,7 @@ The original draft made seven named holes. Six do not require a new shared depen
 | role-group JSON decoding | same | typed `/job_role_groups` decoder over the same parsed JSON |
 | environment access | `System.getEnv : ... → Maybe String` | direct wrapper; fixed `HANDSHAKE_EDU_API_KEY` name |
 | decimal job-id validation | ordinary character/list operations | nonempty ASCII decimal check |
-| ICU GET with `x-api-key` | incomplete on merged transport path | remains the one genuine dependency/API gap |
+| ICU GET with `x-api-key` | pending stack has header/capture mechanics; arbitrary credential-header redirect semantics are missing | genuine dependency/API gap, tracked by ICU #19 |
 
 `Language.JSON` is already part of current Idriç contrib. It parses a string to `Maybe JSON`, with structural `JNull`, `JBoolean`, `JNumber`, `JString`, `JArray`, and `JObject` values plus object-field lookup. The Handshake checkpoint therefore does not carry its own JSON grammar. Only fields needed for the two raw tables are decoded into Handshake records; unrelated response fields remain parsed JSON and are ignored.
 
@@ -101,24 +103,28 @@ Idriç PR #67 is separately restoring the stricter project-level `environment_va
 
 ## Genuine remaining transport gap
 
-The current merged Idric-Net HTTP model already has typed HTTP header values, but its normal renderer supplies a fixed header set. Current merged ICU's `send_request` consumes that rendered request and returns a transport result; it does not expose the response body to this caller.
+The current merged Idric-Net HTTP model already has typed HTTP header values, but its normal renderer supplies a fixed header set. Current merged ICU does not expose the response-body capture path this caller needs.
 
-Two pending ICU lines demonstrate the missing halves, but neither is the merged shared API Handshake needs:
+The pending ICU stack is closer:
 
-- ICU #13 adds checked caller-supplied request headers, including `-H` / `--header`, on its pending branch;
-- ICU #12 exposes a file-backed raw response capture seam for the OpenAI client on another pending stack.
+- ICU #12 adds file-backed raw response capture;
+- ICU #13 is stacked on #12 and adds validated caller-supplied request headers plus `fetch_to_files_with_headers`.
 
-Handshake therefore does **not** invent a private transport. `edu_icu_get` currently returns an explicit `Left` explaining that caller-header + response-body support is pending. Live `jobs` and `roles` fail closed there. Once ICU/Idric-Net exposes one current shared request API with both capabilities, that small boundary can be replaced directly.
+So caller-header construction and response capture are not missing inventions. The remaining blocker is redirect credential semantics. ICU #13 strips `Authorization` and `Cookie` when a redirect changes scheme, host, or port, but preserves other custom headers. Current Idric-Net's header classifier makes the same name-based distinction.
+
+Handshake authenticates with `x-api-key`. On that pending generic path, `x-api-key` is therefore an ordinary custom header and could be forwarded to a cross-origin redirect target. ICU #19 tracks the needed shared surface: let the caller declare an arbitrary header credential-sensitive, or provide an equivalent policy, so same-origin redirects can retain it while cross-origin redirects remove it.
+
+Handshake therefore does **not** invent a private transport. `edu_icu_get` returns an explicit `Left` naming ICU #19, and live `jobs` and `roles` fail closed there. It does not substitute curl, Python, browser cookies, or a Handshake-specific socket path.
 
 ## Checkpoint ladder
 
 1. source parses/checks against current Idriç plus contrib;
 2. `url jobs` and `url roles` print the documented endpoints;
 3. `public JOB_ID` accepts decimal ids and rejects malformed ids;
-4. jobs fixture decodes and matches its TSV receipt;
+4. jobs fixture decodes, flattens embedded TSV-breaking whitespace, and matches its TSV receipt;
 5. job-role-group fixture decodes and matches its TSV receipt;
 6. process environment distinguishes missing and empty API keys;
-7. shared ICU/Idric-Net request API accepts caller headers and returns a response body;
+7. ICU/Idric-Net supports caller-declared credential-sensitive headers on its caller-header + response-capture path (ICU #19);
 8. one live `/jobs` page travels through that API with `x-api-key`;
 9. one live `/job_role_groups` page travels through the same boundary;
 10. cursor pagination is added without changing the one-page decoder contract;
