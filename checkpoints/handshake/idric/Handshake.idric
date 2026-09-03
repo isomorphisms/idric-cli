@@ -75,7 +75,8 @@ read_fixture path = do
   case outcome of
     Left problem =>
       pure (Left ("could not read fixture " ++ path ++ ": " ++ show problem))
-    Right body => pure (Right body)
+    Right body =>
+      pure (Right body)
 
 
 json_field : String → JSON → Maybe JSON
@@ -89,37 +90,52 @@ required_integer name object =
       in if cast integer == value
            then Right integer
            else Left ("field " ++ name ++ " must be an integer")
-    Just _ => Left ("field " ++ name ++ " must be an integer")
-    Nothing => Left ("missing field " ++ name)
+    Just _ =>
+      Left ("field " ++ name ++ " must be an integer")
+    Nothing =>
+      Left ("missing field " ++ name)
 
 required_string : String → JSON → Either String String
 required_string name object =
   case json_field name object of
-    Just (JString value) => Right value
-    Just _ => Left ("field " ++ name ++ " must be a string")
-    Nothing => Left ("missing field " ++ name)
+    Just (JString value) =>
+      Right value
+    Just _ =>
+      Left ("field " ++ name ++ " must be a string")
+    Nothing =>
+      Left ("missing field " ++ name)
 
 required_boolean : String → JSON → Either String Bool
 required_boolean name object =
   case json_field name object of
-    Just (JBoolean value) => Right value
-    Just _ => Left ("field " ++ name ++ " must be a boolean")
-    Nothing => Left ("missing field " ++ name)
+    Just (JBoolean value) =>
+      Right value
+    Just _ =>
+      Left ("field " ++ name ++ " must be a boolean")
+    Nothing =>
+      Left ("missing field " ++ name)
 
 optional_string : String → JSON → Either String (Maybe String)
 optional_string name object =
   case json_field name object of
-    Nothing => Right Nothing
-    Just JNull => Right Nothing
-    Just (JString value) => Right (Just value)
-    Just _ => Left ("field " ++ name ++ " must be a string or null")
+    Nothing =>
+      Right Nothing
+    Just JNull =>
+      Right Nothing
+    Just (JString value) =>
+      Right (Just value)
+    Just _ =>
+      Left ("field " ++ name ++ " must be a string or null")
 
 response_data : JSON → Either String (List JSON)
 response_data document =
   case json_field "data" document of
-    Just (JArray values) => Right values
-    Just _ => Left "field data must be an array"
-    Nothing => Left "missing field data"
+    Just (JArray values) =>
+      Right values
+    Just _ =>
+      Left "field data must be an array"
+    Nothing =>
+      Left "missing field data"
 
 
 decode_job : JSON → Either String Job
@@ -162,7 +178,8 @@ decode_jobs_values (value :: rest) = do
 decode_jobs_response : String → Either String (List Job)
 decode_jobs_response body =
   case Language.JSON.parse body of
-    Nothing => Left "invalid JSON response"
+    Nothing =>
+      Left "invalid JSON response"
     Just document => do
       values ← response_data document
       decode_jobs_values values
@@ -193,7 +210,8 @@ decode_roles_values (value :: rest) = do
 decode_roles_response : String → Either String (List Job_Role_Group)
 decode_roles_response body =
   case Language.JSON.parse body of
-    Nothing => Left "invalid JSON response"
+    Nothing =>
+      Left "invalid JSON response"
     Just document => do
       values ← response_data document
       decode_roles_values values
@@ -217,8 +235,10 @@ decimal_digits (value :: rest) =
 valid_job_id : String → Bool
 valid_job_id text =
   case unpack text of
-    [] => False
-    values => decimal_digits values
+    [] =>
+      False
+    values =>
+      decimal_digits values
 
 
 -- Genuine remaining dependency boundary:
@@ -315,7 +335,8 @@ read_and_print printer path = do
     Left problem => do
       putStrLn ("handshake: " ++ problem)
       exitFailure
-    Right body => printer body
+    Right body =>
+      printer body
 
 fetch_and_print : (String → IO ()) → String → IO ()
 fetch_and_print printer url = do
@@ -333,7 +354,8 @@ fetch_and_print printer url = do
         Left problem => do
           putStrLn ("handshake: " ++ problem)
           exitFailure
-        Right body => printer body
+        Right body =>
+          printer body
 
 
 run : command → IO ()
@@ -361,7 +383,8 @@ main = do
         Left problem => do
           putStrLn problem
           exitFailure
-        Right value => run value
+        Right value =>
+          run value
     [] => do
       putStrLn usage
       exitFailure
