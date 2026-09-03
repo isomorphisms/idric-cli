@@ -2,7 +2,7 @@
   "data": [
     {
       "id": 1001,
-      "title": "Synthetic Remote Research Task",
+      "title": "Synthetic\tRemote\nResearch Task",
       "employer_id": 2001,
       "start_date_time": "2026-09-01T00:00:00Z",
       "employment_type": "part-time",
