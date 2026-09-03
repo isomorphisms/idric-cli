@@ -81,19 +81,21 @@ This first slice intentionally does not paginate. Handshake documents cursor pag
 
 ## Surface audit
 
-The original draft made seven named holes. Six do not require a new shared dependency and are now implemented locally or through existing Idriç library surfaces:
+The original draft made seven named holes. Six do not require a new shared dependency and are now implemented through current Idriç surfaces or small client-local logic:
 
 | Original hole | Present surface | Current treatment |
 | --- | --- | --- |
 | TSV field cleanup | `String`, `pack`, `unpack` | local replacement of tab/newline/carriage-return with spaces |
 | fixture input | `System.File.readFile : ... → Either FileError String` | implemented with explicit file-error text |
-| jobs JSON decoding | ordinary Idriç data/recursion | focused structural JSON parser + typed `/jobs` decoder |
-| role-group JSON decoding | same | focused structural JSON parser + typed `/job_role_groups` decoder |
+| jobs JSON decoding | `Language.JSON.parse`, `JSON`, `lookup` | typed `/jobs` decoder over Idriç contrib JSON |
+| role-group JSON decoding | same | typed `/job_role_groups` decoder over the same parsed JSON |
 | environment access | `System.getEnv : ... → Maybe String` | direct wrapper; fixed `HANDSHAKE_EDU_API_KEY` name |
 | decimal job-id validation | ordinary character/list operations | nonempty ASCII decimal check |
 | ICU GET with `x-api-key` | incomplete on merged transport path | remains the one genuine dependency/API gap |
 
-The local JSON parser handles strings (including JSON escapes and surrogate pairs), null, booleans, integers, other JSON-number forms, arrays, and objects. Only the fields needed for the two raw tables are decoded into Handshake records; unrelated response fields are parsed and ignored rather than searched textually.
+`Language.JSON` is already part of current Idriç contrib. It parses a string to `Maybe JSON`, with structural `JNull`, `JBoolean`, `JNumber`, `JString`, `JArray`, and `JObject` values plus object-field lookup. The Handshake checkpoint therefore does not carry its own JSON grammar. Only fields needed for the two raw tables are decoded into Handshake records; unrelated response fields remain parsed JSON and are ignored.
+
+`Language.JSON` represents JSON numbers as `Double`. Required Handshake identifier fields are accepted only when the parsed number converts back to the same integral value. If Handshake ever documents or emits identifiers outside the exactly representable integer range of that JSON surface, that becomes a real decoding-surface limitation rather than something this client should hide.
 
 Idriç PR #67 is separately restoring the stricter project-level `environment_value : String → IO (Maybe String)` wrapper after the source-layout rewrite. That wrapper rejects invalid environment-variable names and preserves unset versus empty. Handshake does not need to block on it: this client queries one fixed valid name and current `System.getEnv` already returns `Maybe String`.
 
@@ -110,7 +112,7 @@ Handshake therefore does **not** invent a private transport. `edu_icu_get` curre
 
 ## Checkpoint ladder
 
-1. source parses/checks;
+1. source parses/checks against current Idriç plus contrib;
 2. `url jobs` and `url roles` print the documented endpoints;
 3. `public JOB_ID` accepts decimal ids and rejects malformed ids;
 4. jobs fixture decodes and matches its TSV receipt;
