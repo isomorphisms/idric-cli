@@ -1,6 +1,8 @@
 module Handshake
 
+import Data.String
 import System
+import System.File
 
 
 edu_base : String
@@ -55,31 +57,440 @@ record Job_Role_Group where
   updated_at : String
 
 
--- Named holes are intentional compiler/library watchpoints. Do not replace
--- them with curl, Python, browser-cookie replay, or another hidden HTTP path.
+-- This checkpoint needs only a small JSON subset, but parsing it structurally
+-- keeps fields attached to the correct object instead of searching raw text.
+choice json_value one_of
+  json_null
+  json_boolean Bool
+  json_integer Integer
+  json_number
+  json_string String
+  json_array (List json_value)
+  json_object (List (String, json_value))
+
+
+clean_field_chars : List Char → List Char
+clean_field_chars [] = []
+clean_field_chars (value :: rest) =
+  if value == '\t' || value == '\n' || value == '\r'
+    then ' ' :: clean_field_chars rest
+    else value :: clean_field_chars rest
 
 clean_field : String → String
-clean_field text = ?flatten_tsv_field
+clean_field text = pack (clean_field_chars (unpack text))
+
 
 read_fixture : String → IO (Either String String)
-read_fixture path = ?read_fixture_text
+read_fixture path = do
+  outcome ← readFile path
+  case outcome of
+    Left problem =>
+      pure (Left ("could not read fixture " ++ path ++ ": " ++ show problem))
+    Right body => pure (Right body)
+
+
+hex_value : Char → Maybe Int
+hex_value value =
+  if value >= '0' && value <= '9'
+    then Just (ord value - ord '0')
+    else if value >= 'a' && value <= 'f'
+      then Just (10 + ord value - ord 'a')
+      else if value >= 'A' && value <= 'F'
+        then Just (10 + ord value - ord 'A')
+        else Nothing
+
+four_hex : List Char → Maybe (Int, List Char)
+four_hex (a :: b :: c :: d :: rest) =
+  case hex_value a of
+    Nothing => Nothing
+    Just av =>
+      case hex_value b of
+        Nothing => Nothing
+        Just bv =>
+          case hex_value c of
+            Nothing => Nothing
+            Just cv =>
+              case hex_value d of
+                Nothing => Nothing
+                Just dv => Just (av * 4096 + bv * 256 + cv * 16 + dv, rest)
+four_hex _ = Nothing
+
+unicode_escape : List Char → Maybe (Char, List Char)
+unicode_escape input =
+  case four_hex input of
+    Nothing => Nothing
+    Just (high, rest) =>
+      if high >= 55296 && high <= 56319
+        then case rest of
+          '\\' :: 'u' :: low_input =>
+            case four_hex low_input of
+              Nothing => Nothing
+              Just (low, remaining) =>
+                if low >= 56320 && low <= 57343
+                  then Just
+                    (chr (65536 + (high - 55296) * 1024 + (low - 56320)),
+                     remaining)
+                  else Nothing
+          _ => Nothing
+        else if high >= 56320 && high <= 57343
+          then Nothing
+          else Just (chr high, rest)
+
+parse_json_string_chars : List Char → List Char → Maybe (String, List Char)
+parse_json_string_chars acc [] = Nothing
+parse_json_string_chars acc ('"' :: rest) = Just (pack (reverse acc), rest)
+parse_json_string_chars acc ('\\' :: '"' :: rest) =
+  parse_json_string_chars ('"' :: acc) rest
+parse_json_string_chars acc ('\\' :: '\\' :: rest) =
+  parse_json_string_chars ('\\' :: acc) rest
+parse_json_string_chars acc ('\\' :: '/' :: rest) =
+  parse_json_string_chars ('/' :: acc) rest
+parse_json_string_chars acc ('\\' :: 'b' :: rest) =
+  parse_json_string_chars (chr 8 :: acc) rest
+parse_json_string_chars acc ('\\' :: 'f' :: rest) =
+  parse_json_string_chars (chr 12 :: acc) rest
+parse_json_string_chars acc ('\\' :: 'n' :: rest) =
+  parse_json_string_chars ('\n' :: acc) rest
+parse_json_string_chars acc ('\\' :: 'r' :: rest) =
+  parse_json_string_chars ('\r' :: acc) rest
+parse_json_string_chars acc ('\\' :: 't' :: rest) =
+  parse_json_string_chars ('\t' :: acc) rest
+parse_json_string_chars acc ('\\' :: 'u' :: rest) =
+  case unicode_escape rest of
+    Nothing => Nothing
+    Just (value, remaining) => parse_json_string_chars (value :: acc) remaining
+parse_json_string_chars acc ('\\' :: _ :: _) = Nothing
+parse_json_string_chars acc (value :: rest) =
+  if ord value < 32
+    then Nothing
+    else parse_json_string_chars (value :: acc) rest
+
+parse_json_string : List Char → Maybe (String, List Char)
+parse_json_string ('"' :: rest) = parse_json_string_chars [] rest
+parse_json_string _ = Nothing
+
+json_space : Char → Bool
+json_space value =
+  value == ' ' || value == '\n' || value == '\r' || value == '\t'
+
+skip_json_space : List Char → List Char
+skip_json_space [] = []
+skip_json_space input@(value :: rest) =
+  if json_space value then skip_json_space rest else input
+
+decimal_digit : Char → Bool
+decimal_digit value = value >= '0' && value <= '9'
+
+consume_digits : Integer → List Char → (Integer, List Char)
+consume_digits total [] = (total, [])
+consume_digits total input@(value :: rest) =
+  if decimal_digit value
+    then
+      consume_digits
+        (total * 10 + cast (ord value - ord '0'))
+        rest
+    else (total, input)
+
+consume_digit_tail : List Char → List Char
+consume_digit_tail [] = []
+consume_digit_tail input@(value :: rest) =
+  if decimal_digit value then consume_digit_tail rest else input
+
+json_number_after_exponent : List Char → Either String (json_value, List Char)
+json_number_after_exponent ('+' :: value :: rest) =
+  if decimal_digit value
+    then Right (json_number, consume_digit_tail rest)
+    else Left "JSON exponent requires decimal digits"
+json_number_after_exponent ('-' :: value :: rest) =
+  if decimal_digit value
+    then Right (json_number, consume_digit_tail rest)
+    else Left "JSON exponent requires decimal digits"
+json_number_after_exponent (value :: rest) =
+  if decimal_digit value
+    then Right (json_number, consume_digit_tail rest)
+    else Left "JSON exponent requires decimal digits"
+json_number_after_exponent [] = Left "JSON exponent requires decimal digits"
+
+json_number_after_integer :
+  Integer →
+  List Char →
+  Either String (json_value, List Char)
+json_number_after_integer number ('.' :: value :: rest) =
+  if decimal_digit value
+    then
+      case consume_digit_tail rest of
+        'e' :: exponent_rest => json_number_after_exponent exponent_rest
+        'E' :: exponent_rest => json_number_after_exponent exponent_rest
+        remaining => Right (json_number, remaining)
+    else Left "JSON fraction requires decimal digits"
+json_number_after_integer number ('e' :: rest) =
+  json_number_after_exponent rest
+json_number_after_integer number ('E' :: rest) =
+  json_number_after_exponent rest
+json_number_after_integer number rest = Right (json_integer number, rest)
+
+parse_json_number : List Char → Either String (json_value, List Char)
+parse_json_number ('-' :: value :: rest) =
+  if decimal_digit value
+    then
+      let (number, remaining) =
+            consume_digits (cast (ord value - ord '0')) rest
+      in json_number_after_integer (0 - number) remaining
+    else Left "expected decimal digit after JSON minus sign"
+parse_json_number (value :: rest) =
+  if decimal_digit value
+    then
+      let (number, remaining) =
+            consume_digits (cast (ord value - ord '0')) rest
+      in json_number_after_integer number remaining
+    else Left "expected JSON number"
+parse_json_number [] = Left "expected JSON number"
+
+mutual
+  parse_json_value : List Char → Either String (json_value, List Char)
+  parse_json_value raw_input =
+    case skip_json_space raw_input of
+      [] => Left "unexpected end of JSON"
+      'n' :: 'u' :: 'l' :: 'l' :: rest =>
+        Right (json_null, rest)
+      't' :: 'r' :: 'u' :: 'e' :: rest =>
+        Right (json_boolean True, rest)
+      'f' :: 'a' :: 'l' :: 's' :: 'e' :: rest =>
+        Right (json_boolean False, rest)
+      input@('"' :: _) =>
+        case parse_json_string input of
+          Nothing => Left "invalid JSON string"
+          Just (text, rest) => Right (json_string text, rest)
+      input@('[' :: _) => parse_json_array input
+      input@('{' :: _) => parse_json_object input
+      input@('-' :: _) => parse_json_number input
+      input@(value :: _) =>
+        if decimal_digit value
+          then parse_json_number input
+          else Left "unsupported or malformed JSON value"
+
+  parse_json_array : List Char → Either String (json_value, List Char)
+  parse_json_array ('[' :: rest) =
+    parse_json_array_items [] (skip_json_space rest)
+  parse_json_array _ = Left "expected JSON array"
+
+  parse_json_array_items :
+    List json_value →
+    List Char →
+    Either String (json_value, List Char)
+  parse_json_array_items acc [] = Left "unterminated JSON array"
+  parse_json_array_items acc (']' :: rest) =
+    Right (json_array (reverse acc), rest)
+  parse_json_array_items acc input = do
+    (value, after_value) ← parse_json_value input
+    case skip_json_space after_value of
+      ',' :: rest =>
+        parse_json_array_items (value :: acc) (skip_json_space rest)
+      ']' :: rest =>
+        Right (json_array (reverse (value :: acc)), rest)
+      _ => Left "expected comma or closing bracket in JSON array"
+
+  parse_json_object : List Char → Either String (json_value, List Char)
+  parse_json_object ('{' :: rest) =
+    parse_json_object_fields [] (skip_json_space rest)
+  parse_json_object _ = Left "expected JSON object"
+
+  parse_json_object_fields :
+    List (String, json_value) →
+    List Char →
+    Either String (json_value, List Char)
+  parse_json_object_fields acc [] = Left "unterminated JSON object"
+  parse_json_object_fields acc ('}' :: rest) =
+    Right (json_object (reverse acc), rest)
+  parse_json_object_fields acc input =
+    case parse_json_string input of
+      Nothing => Left "expected string field name in JSON object"
+      Just (name, after_name) =>
+        case skip_json_space after_name of
+          ':' :: after_colon => do
+            (value, after_value) ← parse_json_value after_colon
+            case skip_json_space after_value of
+              ',' :: rest =>
+                parse_json_object_fields
+                  ((name, value) :: acc)
+                  (skip_json_space rest)
+              '}' :: rest =>
+                Right (json_object (reverse ((name, value) :: acc)), rest)
+              _ => Left "expected comma or closing brace in JSON object"
+          _ => Left "expected colon after JSON field name"
+
+
+parse_json_document : String → Either String json_value
+parse_json_document body = do
+  (value, remaining) ← parse_json_value (unpack body)
+  case skip_json_space remaining of
+    [] => Right value
+    _ => Left "trailing content after JSON document"
+
+
+lookup_json_field :
+  String →
+  List (String, json_value) →
+  Maybe json_value
+lookup_json_field wanted [] = Nothing
+lookup_json_field wanted ((name, value) :: rest) =
+  if name == wanted
+    then Just value
+    else lookup_json_field wanted rest
+
+required_integer :
+  String →
+  List (String, json_value) →
+  Either String Integer
+required_integer name fields =
+  case lookup_json_field name fields of
+    Just (json_integer value) => Right value
+    Just _ => Left ("field " ++ name ++ " must be an integer")
+    Nothing => Left ("missing field " ++ name)
+
+required_string :
+  String →
+  List (String, json_value) →
+  Either String String
+required_string name fields =
+  case lookup_json_field name fields of
+    Just (json_string value) => Right value
+    Just _ => Left ("field " ++ name ++ " must be a string")
+    Nothing => Left ("missing field " ++ name)
+
+required_boolean :
+  String →
+  List (String, json_value) →
+  Either String Bool
+required_boolean name fields =
+  case lookup_json_field name fields of
+    Just (json_boolean value) => Right value
+    Just _ => Left ("field " ++ name ++ " must be a boolean")
+    Nothing => Left ("missing field " ++ name)
+
+optional_string :
+  String →
+  List (String, json_value) →
+  Either String (Maybe String)
+optional_string name fields =
+  case lookup_json_field name fields of
+    Nothing => Right Nothing
+    Just json_null => Right Nothing
+    Just (json_string value) => Right (Just value)
+    Just _ => Left ("field " ++ name ++ " must be a string or null")
+
+response_data : json_value → Either String (List json_value)
+response_data (json_object fields) =
+  case lookup_json_field "data" fields of
+    Just (json_array values) => Right values
+    Just _ => Left "field data must be an array"
+    Nothing => Left "missing field data"
+response_data _ = Left "Handshake response must be a JSON object"
+
+
+decode_job : json_value → Either String Job
+decode_job (json_object fields) = do
+  identifier ← required_integer "id" fields
+  title ← required_string "title" fields
+  employer_identifier ← required_integer "employer_id" fields
+  employment ← optional_string "employment_type" fields
+  kind ← optional_string "type" fields
+  pay ← optional_string "pay_rate" fields
+  is_remote ← required_boolean "remote" fields
+  is_on_site ← required_boolean "on_site" fields
+  is_hybrid ← required_boolean "hybrid" fields
+  salary ← optional_string "salary_type" fields
+  external ← optional_string "external_url" fields
+  updated ← required_string "updated_at" fields
+  pure
+    (make_job
+      identifier
+      title
+      employer_identifier
+      employment
+      kind
+      pay
+      is_remote
+      is_on_site
+      is_hybrid
+      salary
+      external
+      updated)
+decode_job _ = Left "each data item in /jobs must be a JSON object"
+
+decode_jobs_values : List json_value → Either String (List Job)
+decode_jobs_values [] = Right []
+decode_jobs_values (value :: rest) = do
+  job ← decode_job value
+  jobs ← decode_jobs_values rest
+  pure (job :: jobs)
 
 decode_jobs_response : String → Either String (List Job)
-decode_jobs_response body = ?decode_handshake_jobs_response
+decode_jobs_response body = do
+  document ← parse_json_document body
+  values ← response_data document
+  decode_jobs_values values
+
+
+decode_role : json_value → Either String Job_Role_Group
+decode_role (json_object fields) = do
+  job_identifier ← required_integer "job_id" fields
+  role_identifier ← required_integer "job_role_group_id" fields
+  role_name ← required_string "job_role_group_name" fields
+  updated ← required_string "updated_at" fields
+  pure
+    (make_job_role_group
+      job_identifier
+      role_identifier
+      role_name
+      updated)
+decode_role _ =
+  Left "each data item in /job_role_groups must be a JSON object"
+
+decode_roles_values :
+  List json_value →
+  Either String (List Job_Role_Group)
+decode_roles_values [] = Right []
+decode_roles_values (value :: rest) = do
+  role ← decode_role value
+  roles ← decode_roles_values rest
+  pure (role :: roles)
 
 decode_roles_response : String → Either String (List Job_Role_Group)
-decode_roles_response body = ?decode_handshake_job_role_groups_response
+decode_roles_response body = do
+  document ← parse_json_document body
+  values ← response_data document
+  decode_roles_values values
 
+
+-- System.getEnv already has exactly the Maybe-valued lookup needed here.
+-- Idriç's stricter environment_value wrapper is being restored separately,
+-- but this client asks only for one fixed, valid environment-variable name.
 environment_value : String → IO (Maybe String)
-environment_value name = ?read_environment_value
+environment_value name = getEnv name
+
+
+decimal_digits : List Char → Bool
+decimal_digits [] = True
+decimal_digits (value :: rest) =
+  decimal_digit value && decimal_digits rest
 
 valid_job_id : String → Bool
-valid_job_id text = ?decimal_job_id_only
+valid_job_id text =
+  case unpack text of
+    [] => False
+    values => decimal_digits values
 
--- The documented EDU API uses an x-api-key request header. ICU/Idric-Net
--- remains the transport boundary; caller-supplied headers belong there.
+
+-- Genuine remaining dependency boundary:
+-- current merged ICU/Idric-Net cannot both attach a caller-supplied x-api-key
+-- header and return the response body to this caller. Fail closed until that
+-- shared transport surface exists; do not substitute curl/Python/browser state.
 edu_icu_get : String → String → IO (Either String String)
-edu_icu_get api_key url = ?icu_get_with_x_api_key
+edu_icu_get api_key url =
+  pure
+    (Left
+      "live EDU GET pending ICU/Idric-Net caller-header + response-body API")
 
 
 endpoint_url : endpoint → String
@@ -171,6 +582,9 @@ fetch_and_print printer url = do
   case maybe_key of
     Nothing => do
       putStrLn "handshake: missing HANDSHAKE_EDU_API_KEY"
+      exitFailure
+    Just "" => do
+      putStrLn "handshake: HANDSHAKE_EDU_API_KEY is empty"
       exitFailure
     Just api_key => do
       outcome ← edu_icu_get api_key url
