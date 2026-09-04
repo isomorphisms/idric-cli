@@ -24,10 +24,10 @@ Some Idriç clients intentionally contain named holes for compiler/library bound
 
 ## Networking
 
-Where these clients need networking, ICU/Idric-Net remains the intended transport boundary. ICU is deliberately **not** a Git submodule here and is not pinned by this repository.
+Where these clients need networking, ICU/Idric-Net remains the intended transport boundary. ICU is deliberately **not** a Git submodule here. While ICU's caller-header/capture stack is still pending, the Handshake compiler checkpoint checks out that current stack explicitly so its transport dependency is executable rather than replaced by curl or Python.
 
 ## Tests
 
-`make test` runs the existing Amazon and AbeBooks smoke tests. Reddit and Handshake have separate compiler checkpoints under `checkpoints/`. Handshake's offline path is implemented and exercised against current Idriç; only its live EDU request remains fail-closed on ICU credential-sensitive `x-api-key` redirect support (ICU #19).
+`make test` runs the existing Amazon and AbeBooks smoke tests. Reddit and Handshake have separate compiler checkpoints under `checkpoints/`. Handshake now uses ICU's caller-declared credential-header surface from ICU #20: `x-api-key` is retained across same-origin redirects and stripped before a cross-origin request. The deterministic Handshake checkpoint exercises that redirect chain with a synthetic key and fixture response.
 
 See `PROVENANCE.md` for the source branches copied into this repository.
