@@ -32,6 +32,11 @@ jobs:
           ref: credential-sensitive-headers
           path: .tools/icu
 
+      - name: Record tested source heads
+        run: |
+          printf 'Idric\t%s\n' "$(git -C "$GITHUB_WORKSPACE/.tools/Idric" rev-parse HEAD)"
+          printf 'ICU\t%s\n' "$(git -C "$GITHUB_WORKSPACE/.tools/icu" rev-parse HEAD)"
+
       - name: Install host build tools
         run: |
           sudo apt-get update
