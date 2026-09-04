@@ -1,0 +1,450 @@
+module Handshake
+
+import Data.String
+import Http
+import Language.JSON
+import System
+import System.File
+import Transport
+
+
+edu_base : String
+edu_base = "https://edu-api.joinhandshake.com/v1"
+
+public_job_base : String
+public_job_base = "https://app.joinhandshake.com/public/jobs/"
+
+jobs_header : String
+jobs_header = "id\ttitle\temployer_id\temployment_type\ttype\tpay_rate\tremote\ton_site\thybrid\tsalary_type\texternal_url\tupdated_at"
+
+roles_header : String
+roles_header = "job_id\tjob_role_group_id\tjob_role_group_name\tupdated_at"
+
+usage : String
+usage = "usage: handshake {url jobs | url roles | public JOB_ID | fixture-jobs FILE | fixture-roles FILE | jobs | roles}"
+
+
+choice endpoint one_of
+  jobs_endpoint
+  roles_endpoint
+
+choice command one_of
+  show_url endpoint
+  public_job String
+  fixture_jobs String
+  fixture_roles String
+  fetch_jobs
+  fetch_roles
+
+
+record Job where
+  constructor Make_Job
+  id : Integer
+  title : String
+  employer_id : Integer
+  employment_type : Maybe String
+  job_type : Maybe String
+  pay_rate : Maybe String
+  remote : Bool
+  on_site : Bool
+  hybrid : Bool
+  salary_type : Maybe String
+  external_url : Maybe String
+  updated_at : String
+
+record Job_Role_Group where
+  constructor Make_Job_Role_Group
+  job_id : Integer
+  job_role_group_id : Integer
+  job_role_group_name : String
+  updated_at : String
+
+
+clean_field_chars : List Char → List Char
+clean_field_chars [] = []
+clean_field_chars (value :: rest) =
+  if value == '\t' || value == '\n' || value == '\r'
+    then ' ' :: clean_field_chars rest
+    else value :: clean_field_chars rest
+
+clean_field : String → String
+clean_field text = pack (clean_field_chars (unpack text))
+
+
+read_fixture : String → IO (Either String String)
+read_fixture path = do
+  outcome ← readFile path
+  case outcome of
+    Left problem =>
+      pure (Left ("could not read fixture " ++ path ++ ": " ++ show problem))
+    Right body =>
+      pure (Right body)
+
+
+json_field : String → JSON → Maybe JSON
+json_field name object = Language.JSON.lookup name object
+
+required_integer : String → JSON → Either String Integer
+required_integer name object =
+  case json_field name object of
+    Just (JNumber value) =>
+      let integer : Integer = cast value
+      in if cast integer == value
+           then Right integer
+           else Left ("field " ++ name ++ " must be an integer")
+    Just _ =>
+      Left ("field " ++ name ++ " must be an integer")
+    Nothing =>
+      Left ("missing field " ++ name)
+
+required_string : String → JSON → Either String String
+required_string name object =
+  case json_field name object of
+    Just (JString value) =>
+      Right value
+    Just _ =>
+      Left ("field " ++ name ++ " must be a string")
+    Nothing =>
+      Left ("missing field " ++ name)
+
+required_boolean : String → JSON → Either String Bool
+required_boolean name object =
+  case json_field name object of
+    Just (JBoolean value) =>
+      Right value
+    Just _ =>
+      Left ("field " ++ name ++ " must be a boolean")
+    Nothing =>
+      Left ("missing field " ++ name)
+
+optional_string : String → JSON → Either String (Maybe String)
+optional_string name object =
+  case json_field name object of
+    Nothing =>
+      Right Nothing
+    Just JNull =>
+      Right Nothing
+    Just (JString value) =>
+      Right (Just value)
+    Just _ =>
+      Left ("field " ++ name ++ " must be a string or null")
+
+response_data : JSON → Either String (List JSON)
+response_data document =
+  case json_field "data" document of
+    Just (JArray values) =>
+      Right values
+    Just _ =>
+      Left "field data must be an array"
+    Nothing =>
+      Left "missing field data"
+
+
+decode_job : JSON → Either String Job
+decode_job object@(JObject _) = do
+  identifier ← required_integer "id" object
+  title ← required_string "title" object
+  employer_identifier ← required_integer "employer_id" object
+  employment ← optional_string "employment_type" object
+  kind ← optional_string "type" object
+  pay ← optional_string "pay_rate" object
+  is_remote ← required_boolean "remote" object
+  is_on_site ← required_boolean "on_site" object
+  is_hybrid ← required_boolean "hybrid" object
+  salary ← optional_string "salary_type" object
+  external ← optional_string "external_url" object
+  updated ← required_string "updated_at" object
+  pure
+    (Make_Job
+      identifier
+      title
+      employer_identifier
+      employment
+      kind
+      pay
+      is_remote
+      is_on_site
+      is_hybrid
+      salary
+      external
+      updated)
+decode_job _ = Left "each data item in /jobs must be a JSON object"
+
+decode_jobs_values : List JSON → Either String (List Job)
+decode_jobs_values [] = Right []
+decode_jobs_values (value :: rest) = do
+  job ← decode_job value
+  jobs ← decode_jobs_values rest
+  pure (job :: jobs)
+
+decode_jobs_response : String → Either String (List Job)
+decode_jobs_response body =
+  case Language.JSON.parse body of
+    Nothing =>
+      Left "invalid JSON response"
+    Just document => do
+      values ← response_data document
+      decode_jobs_values values
+
+
+decode_role : JSON → Either String Job_Role_Group
+decode_role object@(JObject _) = do
+  job_identifier ← required_integer "job_id" object
+  role_identifier ← required_integer "job_role_group_id" object
+  role_name ← required_string "job_role_group_name" object
+  updated ← required_string "updated_at" object
+  pure
+    (Make_Job_Role_Group
+      job_identifier
+      role_identifier
+      role_name
+      updated)
+decode_role _ =
+  Left "each data item in /job_role_groups must be a JSON object"
+
+decode_roles_values : List JSON → Either String (List Job_Role_Group)
+decode_roles_values [] = Right []
+decode_roles_values (value :: rest) = do
+  role ← decode_role value
+  roles ← decode_roles_values rest
+  pure (role :: roles)
+
+decode_roles_response : String → Either String (List Job_Role_Group)
+decode_roles_response body =
+  case Language.JSON.parse body of
+    Nothing =>
+      Left "invalid JSON response"
+    Just document => do
+      values ← response_data document
+      decode_roles_values values
+
+
+-- System.getEnv already has exactly the Maybe-valued lookup needed here.
+-- Idriç's stricter environment_value wrapper is being restored separately,
+-- but this client asks only for fixed, valid environment-variable names.
+environment_value : String → IO (Maybe String)
+environment_value name = getEnv name
+
+
+environment_value_or : String → String → IO String
+environment_value_or name fallback = do
+  value ← environment_value name
+  case value of
+    Nothing => pure fallback
+    Just "" => pure fallback
+    Just text => pure text
+
+
+decimal_digit : Char → Bool
+decimal_digit value = value >= '0' && value <= '9'
+
+decimal_digits : List Char → Bool
+decimal_digits [] = True
+decimal_digits (value :: rest) =
+  decimal_digit value && decimal_digits rest
+
+valid_job_id : String → Bool
+valid_job_id text =
+  case unpack text of
+    [] =>
+      False
+    values =>
+      decimal_digits values
+
+
+cleanup_file : String → IO ()
+cleanup_file path = do
+  outcome ← removeFile path
+  case outcome of
+    Left _ => pure ()
+    Right () => pure ()
+
+cleanup_files : String → String → IO ()
+cleanup_files body_path metadata_path = do
+  cleanup_file body_path
+  cleanup_file metadata_path
+
+
+edu_icu_get : String → String → IO (Either String String)
+edu_icu_get api_key url =
+  case parse_url url of
+    Left problem =>
+      pure (Left ("invalid Handshake EDU URL: " ++ problem))
+    Right target_url =>
+      case make_credential_header "x-api-key" api_key of
+        Left _ =>
+          pure (Left "HANDSHAKE_EDU_API_KEY contains an invalid HTTP header character")
+        Right key_header => do
+          pid ← getPID
+          temp_root ← environment_value_or "TMPDIR" "/tmp"
+          let prefix = temp_root ++ "/idric-handshake-" ++ show pid
+          let body_path = prefix ++ ".json"
+          let metadata_path = prefix ++ ".meta"
+          fetch_result ←
+            fetch_to_files_with_headers
+              (get target_url)
+              [key_header]
+              body_path
+              metadata_path
+          case fetch_result of
+            Left problem => do
+              cleanup_files body_path metadata_path
+              pure (Left problem)
+            Right transport_code => do
+              body_result ← readFile body_path
+              cleanup_files body_path metadata_path
+              if transport_code /= 0
+                then pure
+                  (Left
+                    ("ICU request failed: transport_code=" ++ show transport_code))
+                else case body_result of
+                  Left _ => pure (Left "could not read Handshake EDU response body")
+                  Right body => pure (Right body)
+
+
+endpoint_url_from : String → endpoint → String
+endpoint_url_from base jobs_endpoint = base ++ "/jobs?page_size=100"
+endpoint_url_from base roles_endpoint = base ++ "/job_role_groups?page_size=100"
+
+endpoint_url : endpoint → String
+endpoint_url = endpoint_url_from edu_base
+
+live_endpoint_url : endpoint → IO String
+live_endpoint_url which = do
+  base ← environment_value_or "HANDSHAKE_EDU_BASE_URL" edu_base
+  pure (endpoint_url_from base which)
+
+
+parse_command : List String → Either String command
+parse_command ["url", "jobs"] = Right (show_url jobs_endpoint)
+parse_command ["url", "roles"] = Right (show_url roles_endpoint)
+parse_command ["public", job_id] = Right (public_job job_id)
+parse_command ["fixture-jobs", path] = Right (fixture_jobs path)
+parse_command ["fixture-roles", path] = Right (fixture_roles path)
+parse_command ["jobs"] = Right fetch_jobs
+parse_command ["roles"] = Right fetch_roles
+parse_command _ = Left usage
+
+
+maybe_field : Maybe String → String
+maybe_field Nothing = ""
+maybe_field (Just text) = clean_field text
+
+render_job : Job → String
+render_job job =
+  show job.id ++ "\t" ++
+  clean_field job.title ++ "\t" ++
+  show job.employer_id ++ "\t" ++
+  maybe_field job.employment_type ++ "\t" ++
+  maybe_field job.job_type ++ "\t" ++
+  maybe_field job.pay_rate ++ "\t" ++
+  show job.remote ++ "\t" ++
+  show job.on_site ++ "\t" ++
+  show job.hybrid ++ "\t" ++
+  maybe_field job.salary_type ++ "\t" ++
+  maybe_field job.external_url ++ "\t" ++
+  clean_field job.updated_at
+
+render_role : Job_Role_Group → String
+render_role role =
+  show role.job_id ++ "\t" ++
+  show role.job_role_group_id ++ "\t" ++
+  clean_field role.job_role_group_name ++ "\t" ++
+  clean_field role.updated_at
+
+print_jobs_rows : List Job → IO ()
+print_jobs_rows [] = pure ()
+print_jobs_rows (job :: rest) = do
+  putStrLn (render_job job)
+  print_jobs_rows rest
+
+print_role_rows : List Job_Role_Group → IO ()
+print_role_rows [] = pure ()
+print_role_rows (role :: rest) = do
+  putStrLn (render_role role)
+  print_role_rows rest
+
+print_jobs_response : String → IO ()
+print_jobs_response body =
+  case decode_jobs_response body of
+    Left problem => do
+      putStrLn ("handshake: " ++ problem)
+      exitFailure
+    Right jobs => do
+      putStrLn jobs_header
+      print_jobs_rows jobs
+
+print_roles_response : String → IO ()
+print_roles_response body =
+  case decode_roles_response body of
+    Left problem => do
+      putStrLn ("handshake: " ++ problem)
+      exitFailure
+    Right roles => do
+      putStrLn roles_header
+      print_role_rows roles
+
+read_and_print : (String → IO ()) → String → IO ()
+read_and_print printer path = do
+  outcome ← read_fixture path
+  case outcome of
+    Left problem => do
+      putStrLn ("handshake: " ++ problem)
+      exitFailure
+    Right body =>
+      printer body
+
+fetch_and_print : (String → IO ()) → String → IO ()
+fetch_and_print printer url = do
+  maybe_key ← environment_value "HANDSHAKE_EDU_API_KEY"
+  case maybe_key of
+    Nothing => do
+      putStrLn "handshake: missing HANDSHAKE_EDU_API_KEY"
+      exitFailure
+    Just "" => do
+      putStrLn "handshake: HANDSHAKE_EDU_API_KEY is empty"
+      exitFailure
+    Just api_key => do
+      outcome ← edu_icu_get api_key url
+      case outcome of
+        Left problem => do
+          putStrLn ("handshake: " ++ problem)
+          exitFailure
+        Right body =>
+          printer body
+
+
+run : command → IO ()
+run (show_url which) = putStrLn (endpoint_url which)
+
+run (public_job job_id) =
+  if valid_job_id job_id
+    then putStrLn (public_job_base ++ job_id)
+    else do
+      putStrLn "handshake: JOB_ID must contain decimal digits only"
+      exitFailure
+
+run (fixture_jobs path) = read_and_print print_jobs_response path
+run (fixture_roles path) = read_and_print print_roles_response path
+run fetch_jobs = do
+  url ← live_endpoint_url jobs_endpoint
+  fetch_and_print print_jobs_response url
+run fetch_roles = do
+  url ← live_endpoint_url roles_endpoint
+  fetch_and_print print_roles_response url
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: rest =>
+      case parse_command rest of
+        Left problem => do
+          putStrLn problem
+          exitFailure
+        Right value =>
+          run value
+    [] => do
+      putStrLn usage
+      exitFailure

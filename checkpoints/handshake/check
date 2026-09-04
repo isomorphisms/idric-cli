@@ -1,0 +1,194 @@
+#!/usr/bin/env ysh
+
+# Idriç Handshake checkpoint runner.
+# Offline surfaces are always executable. When a deterministic EDU base URL is
+# supplied, the live command is exercised through ICU with a synthetic key.
+
+set -u
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+IDRIC=${IDRIC:-idris2}
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+
+status=0
+
+available() {
+  case "$1" in
+    */*) test -x "$1" ;;
+    *) command -v "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
+pass() {
+  printf 'PASS\t%s\n' "$1"
+}
+
+fail() {
+  printf 'FAIL\t%s\n' "$1"
+  status=1
+}
+
+skip() {
+  printf 'SKIP\t%s\n' "$1"
+}
+
+show_diagnostics() {
+  for path in "$@"; do
+    if test -s "$path"; then
+      sed 's/^/  /' "$path"
+    fi
+  done
+}
+
+expect_success_output() {
+  label=$1
+  expected=$2
+  shift 2
+
+  if "$@" >"$TMP/actual" 2>"$TMP/actual.err"; then
+    printf '%s\n' "$expected" >"$TMP/expected"
+    if cmp -s "$TMP/expected" "$TMP/actual"; then
+      pass "$label"
+    else
+      fail "$label"
+      diff -u "$TMP/expected" "$TMP/actual" || true
+      show_diagnostics "$TMP/actual.err"
+    fi
+  else
+    fail "$label"
+    show_diagnostics "$TMP/actual" "$TMP/actual.err"
+  fi
+}
+
+expect_failure_output() {
+  label=$1
+  expected=$2
+  shift 2
+
+  if "$@" >"$TMP/actual" 2>"$TMP/actual.err"; then
+    fail "$label"
+    show_diagnostics "$TMP/actual" "$TMP/actual.err"
+  else
+    printf '%s\n' "$expected" >"$TMP/expected"
+    if cmp -s "$TMP/expected" "$TMP/actual"; then
+      pass "$label"
+    else
+      fail "$label"
+      diff -u "$TMP/expected" "$TMP/actual" || true
+      show_diagnostics "$TMP/actual.err"
+    fi
+  fi
+}
+
+if ! available "$IDRIC"; then
+  skip "idric (not found: $IDRIC)"
+  exit 0
+fi
+
+# Current Idriç checks the declared module name against the source path. Copy
+# the exact checkpoint source into an isolated module root so `module Handshake`
+# is checked as Handshake.idric rather than as a nested absolute path.
+cp "$HERE/idric/Handshake.idric" "$TMP/Handshake.idric"
+
+if (
+  cd "$TMP"
+  "$IDRIC" --check Handshake.idric \
+    >"$TMP/idric" 2>"$TMP/idric.err"
+); then
+  pass 'idric/check'
+else
+  fail 'idric/check'
+  show_diagnostics "$TMP/idric" "$TMP/idric.err"
+  exit "$status"
+fi
+
+if (
+  cd "$TMP"
+  "$IDRIC" Handshake.idric -o handshake \
+    >"$TMP/build.log" 2>"$TMP/build.err"
+); then
+  pass 'idric/build'
+else
+  fail 'idric/build'
+  show_diagnostics "$TMP/build.log" "$TMP/build.err"
+  exit "$status"
+fi
+
+PROGRAM="$TMP/build/exec/handshake"
+if test ! -x "$PROGRAM"; then
+  fail 'idric/executable'
+  find "$TMP" -maxdepth 4 -type f -print | sed 's/^/  /'
+  exit "$status"
+fi
+pass 'idric/executable'
+
+expect_success_output \
+  'url/jobs' \
+  'https://edu-api.joinhandshake.com/v1/jobs?page_size=100' \
+  "$PROGRAM" url jobs
+
+expect_success_output \
+  'url/roles' \
+  'https://edu-api.joinhandshake.com/v1/job_role_groups?page_size=100' \
+  "$PROGRAM" url roles
+
+expect_success_output \
+  'public/decimal' \
+  'https://app.joinhandshake.com/public/jobs/123456' \
+  "$PROGRAM" public 123456
+
+expect_failure_output \
+  'public/reject-nondecimal' \
+  'handshake: JOB_ID must contain decimal digits only' \
+  "$PROGRAM" public 12x
+
+if "$PROGRAM" fixture-jobs "$HERE/fixture/jobs.json" \
+    >"$TMP/jobs.tsv" 2>"$TMP/jobs.err" &&
+   cmp -s "$HERE/fixture/jobs.expected.tsv" "$TMP/jobs.tsv"; then
+  pass 'fixture/jobs'
+else
+  fail 'fixture/jobs'
+  diff -u "$HERE/fixture/jobs.expected.tsv" "$TMP/jobs.tsv" || true
+  show_diagnostics "$TMP/jobs.err"
+fi
+
+if "$PROGRAM" fixture-roles "$HERE/fixture/job_role_groups.json" \
+    >"$TMP/roles.tsv" 2>"$TMP/roles.err" &&
+   cmp -s "$HERE/fixture/job_role_groups.expected.tsv" "$TMP/roles.tsv"; then
+  pass 'fixture/roles'
+else
+  fail 'fixture/roles'
+  diff -u "$HERE/fixture/job_role_groups.expected.tsv" "$TMP/roles.tsv" || true
+  show_diagnostics "$TMP/roles.err"
+fi
+
+expect_failure_output \
+  'environment/missing' \
+  'handshake: missing HANDSHAKE_EDU_API_KEY' \
+  env -u HANDSHAKE_EDU_API_KEY "$PROGRAM" jobs
+
+expect_failure_output \
+  'environment/empty' \
+  'handshake: HANDSHAKE_EDU_API_KEY is empty' \
+  env HANDSHAKE_EDU_API_KEY= "$PROGRAM" jobs
+
+if test -n "${HANDSHAKE_TEST_EDU_BASE_URL:-}"; then
+  if env \
+      HANDSHAKE_EDU_API_KEY=synthetic \
+      HANDSHAKE_EDU_BASE_URL="$HANDSHAKE_TEST_EDU_BASE_URL" \
+      "$PROGRAM" jobs \
+      >"$TMP/live-jobs.tsv" 2>"$TMP/live-jobs.err" &&
+     cmp -s "$HERE/fixture/jobs.expected.tsv" "$TMP/live-jobs.tsv"; then
+    pass 'transport/credential-redirects'
+  else
+    fail 'transport/credential-redirects'
+    diff -u "$HERE/fixture/jobs.expected.tsv" "$TMP/live-jobs.tsv" || true
+    show_diagnostics "$TMP/live-jobs.err"
+  fi
+else
+  skip 'transport/credential-redirects (HANDSHAKE_TEST_EDU_BASE_URL not set)'
+fi
+
+exit "$status"

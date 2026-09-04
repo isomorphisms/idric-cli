@@ -1,0 +1,135 @@
+name: Handshake Idric checkpoint
+
+on:
+  pull_request:
+    paths:
+      - 'Handshake.idric'
+      - 'checkpoints/handshake/**'
+      - '.github/workflows/handshake-idric.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  handshake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout idric-cli
+        uses: actions/checkout@v4
+
+      - name: Checkout current Idric
+        uses: actions/checkout@v4
+        with:
+          repository: isomorphisms/Idric
+          ref: Idriç
+          path: .tools/Idric
+
+      - name: Checkout ICU credential-header stack
+        uses: actions/checkout@v4
+        with:
+          repository: dilapidated-shed/icu
+          ref: credential-sensitive-headers
+          path: .tools/icu
+
+      - name: Record tested source heads
+        run: |
+          printf 'Idric\t%s\n' "$(git -C "$GITHUB_WORKSPACE/.tools/Idric" rev-parse HEAD)"
+          printf 'ICU\t%s\n' "$(git -C "$GITHUB_WORKSPACE/.tools/icu" rev-parse HEAD)"
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl libssl-dev
+
+      - name: Bootstrap Idric
+        run: .tools/Idric/_/edric bootstrap
+
+      - name: Expose pinned Chez
+        run: echo "$GITHUB_WORKSPACE/.tools/Idric/_/.tools/bin" >> "$GITHUB_PATH"
+
+      - name: Build and check ICU transport
+        env:
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+        run: |
+          make -C "$GITHUB_WORKSPACE/.tools/icu" check-native
+          make -C "$GITHUB_WORKSPACE/.tools/icu" \
+            IDRIC="$GITHUB_WORKSPACE/.tools/Idric/_/build/exec/idris2"
+
+      - name: Start deterministic credential redirect servers
+        env:
+          HANDSHAKE_JOBS_FIXTURE: ${{ github.workspace }}/checkpoints/handshake/fixture/jobs.json
+        run: |
+          cat > "$RUNNER_TEMP/handshake-redirect.py" <<'PY'
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+          import os
+          import threading
+
+          fixture = Path(os.environ["HANDSHAKE_JOBS_FIXTURE"]).read_bytes()
+
+          class FirstOrigin(BaseHTTPRequestHandler):
+              protocol_version = "HTTP/1.0"
+
+              def log_message(self, format, *args):
+                  pass
+
+              def redirect(self, location):
+                  self.send_response(302)
+                  self.send_header("Location", location)
+                  self.send_header("Content-Length", "0")
+                  self.end_headers()
+
+              def do_GET(self):
+                  if self.headers.get("x-api-key") != "synthetic":
+                      self.send_error(400, "x-api-key missing on same-origin hop")
+                      return
+                  if self.path == "/v1/jobs?page_size=100":
+                      self.redirect("/v1/jobs/continued")
+                      return
+                  if self.path == "/v1/jobs/continued":
+                      self.redirect("http://127.0.0.1:18084/final")
+                      return
+                  self.send_error(404)
+
+          class SecondOrigin(BaseHTTPRequestHandler):
+              protocol_version = "HTTP/1.0"
+
+              def log_message(self, format, *args):
+                  pass
+
+              def do_GET(self):
+                  if self.path != "/final":
+                      self.send_error(404)
+                      return
+                  if self.headers.get("x-api-key") is not None:
+                      self.send_error(400, "x-api-key leaked across origin")
+                      return
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json; charset=utf-8")
+                  self.send_header("Content-Length", str(len(fixture)))
+                  self.end_headers()
+                  self.wfile.write(fixture)
+
+          first = ThreadingHTTPServer(("127.0.0.1", 18083), FirstOrigin)
+          second = ThreadingHTTPServer(("127.0.0.1", 18084), SecondOrigin)
+          threading.Thread(target=first.serve_forever, daemon=True).start()
+          second.serve_forever()
+          PY
+          python3 "$RUNNER_TEMP/handshake-redirect.py" \
+            > "$RUNNER_TEMP/handshake-redirect.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/handshake-redirect.pid"
+          sleep 1
+
+      - name: Run Handshake checkpoint
+        env:
+          IDRIC: ${{ github.workspace }}/.tools/Idric/_/build/exec/idris2
+          IDRIS2_PREFIX: ${{ github.workspace }}/.tools/Idric/_/bootstrap-build
+          IDRIS2_PATH: ${{ github.workspace }}/.tools/Idric/_/libs/contrib/build/ttc:${{ github.workspace }}/.tools/icu/build/ttc
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.tools/icu
+          HANDSHAKE_TEST_EDU_BASE_URL: http://127.0.0.1:18083/v1
+        run: bash checkpoints/handshake/check
+
+      - name: Show redirect server log on failure
+        if: failure()
+        run: cat "$RUNNER_TEMP/handshake-redirect.log" 2>/dev/null || true

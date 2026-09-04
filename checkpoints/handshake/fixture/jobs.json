@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "id": 1001,
+      "title": "Synthetic\tRemote\nResearch Task",
+      "employer_id": 2001,
+      "start_date_time": "2026-09-01T00:00:00Z",
+      "employment_type": "part-time",
+      "type": "Job",
+      "pay_rate": "$45/hour",
+      "remote": true,
+      "external_url": null,
+      "on_site": false,
+      "hybrid": false,
+      "archived": false,
+      "duration": "Temporary/Seasonal",
+      "salary_type": "paid",
+      "created_at": "2026-08-31T12:00:00Z",
+      "updated_at": "2026-09-01T12:00:00Z"
+    }
+  ],
+  "meta": {
+    "next_cursor": null,
+    "prev_cursor": null
+  }
+}
