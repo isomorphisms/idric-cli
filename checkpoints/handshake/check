@@ -1,8 +1,8 @@
 #!/usr/bin/env ysh
 
 # Idriç Handshake checkpoint runner.
-# The offline surfaces are executable; the live network command must fail
-# closed at the one documented ICU/Idric-Net dependency boundary.
+# Offline surfaces are always executable. When a deterministic EDU base URL is
+# supplied, the live command is exercised through ICU with a synthetic key.
 
 set -u
 
@@ -174,9 +174,21 @@ expect_failure_output \
   'handshake: HANDSHAKE_EDU_API_KEY is empty' \
   env HANDSHAKE_EDU_API_KEY= "$PROGRAM" jobs
 
-expect_failure_output \
-  'transport/explicit-gap' \
-  'handshake: live EDU GET pending ICU credential-safe x-api-key redirect policy (icu#19)' \
-  env HANDSHAKE_EDU_API_KEY=synthetic "$PROGRAM" jobs
+if test -n "${HANDSHAKE_TEST_EDU_BASE_URL:-}"; then
+  if env \
+      HANDSHAKE_EDU_API_KEY=synthetic \
+      HANDSHAKE_EDU_BASE_URL="$HANDSHAKE_TEST_EDU_BASE_URL" \
+      "$PROGRAM" jobs \
+      >"$TMP/live-jobs.tsv" 2>"$TMP/live-jobs.err" &&
+     cmp -s "$HERE/fixture/jobs.expected.tsv" "$TMP/live-jobs.tsv"; then
+    pass 'transport/credential-redirects'
+  else
+    fail 'transport/credential-redirects'
+    diff -u "$HERE/fixture/jobs.expected.tsv" "$TMP/live-jobs.tsv" || true
+    show_diagnostics "$TMP/live-jobs.err"
+  fi
+else
+  skip 'transport/credential-redirects (HANDSHAKE_TEST_EDU_BASE_URL not set)'
+fi
 
 exit "$status"
