@@ -75,15 +75,17 @@ The jobs fixture includes escaped tab/newline characters in a title while its ex
 
 ### `jobs` / `roles`
 
-Read `HANDSHAKE_EDU_API_KEY`, perform one ICU/Idric-Net GET with the required `x-api-key` header, decode the response, and emit the same TSV shape as the fixtures.
+Read `HANDSHAKE_EDU_API_KEY`, build `x-api-key` with ICU's caller-declared credential-header surface, perform one ICU GET with file-backed response capture, decode the response, and emit the same TSV shape as the fixtures.
 
-The live transport call currently fails closed at the credential-policy boundary described below.
+The credential tag does not change the header's wire representation. Its only policy effect is on redirects: same-origin redirects retain `x-api-key`; a change of scheme, host, or port strips it before the redirected request is sent.
 
-This first slice intentionally does not paginate. Handshake documents cursor pagination (`next_cursor` / `page_cursor`); pagination should be the next network-level checkpoint after a single live page works.
+This first slice intentionally does not paginate. Handshake documents cursor pagination (`next_cursor` / `page_cursor`); pagination should follow after a single live page is accepted.
+
+`HANDSHAKE_EDU_BASE_URL` exists so deterministic acceptance can direct the live command at a local fixture server. The `url jobs` and `url roles` commands continue to report the documented production URLs.
 
 ## Surface audit
 
-The original draft made seven named holes. Six do not require a new shared dependency and are now implemented through current Idriç surfaces or small client-local logic:
+The original draft made seven named holes. They are now either implemented through current Idriç surfaces/small client-local logic or covered by the pending ICU stack:
 
 | Original hole | Present surface | Current treatment |
 | --- | --- | --- |
@@ -91,44 +93,38 @@ The original draft made seven named holes. Six do not require a new shared depen
 | fixture input | `System.File.readFile : ... → Either FileError String` | implemented with explicit file-error text |
 | jobs JSON decoding | `Language.JSON.parse`, `JSON`, `lookup` | typed `/jobs` decoder over Idriç contrib JSON |
 | role-group JSON decoding | same | typed `/job_role_groups` decoder over the same parsed JSON |
-| environment access | `System.getEnv : ... → Maybe String` | direct wrapper; fixed `HANDSHAKE_EDU_API_KEY` name |
+| environment access | `System.getEnv : ... → Maybe String` | direct wrapper for fixed valid names |
 | decimal job-id validation | ordinary character/list operations | nonempty ASCII decimal check |
-| ICU GET with `x-api-key` | pending stack has header/capture mechanics; arbitrary credential-header redirect semantics are missing | genuine dependency/API gap, tracked by ICU #19 |
+| ICU GET with `x-api-key` | ICU #13 header/capture mechanics plus ICU #20 caller-declared credential headers | implemented; pending that ICU stack landing |
 
 `Language.JSON` is already part of current Idriç contrib. It parses a string to `Maybe JSON`, with structural `JNull`, `JBoolean`, `JNumber`, `JString`, `JArray`, and `JObject` values plus object-field lookup. The Handshake checkpoint therefore does not carry its own JSON grammar. Only fields needed for the two raw tables are decoded into Handshake records; unrelated response fields remain parsed JSON and are ignored.
 
 `Language.JSON` represents JSON numbers as `Double`. Required Handshake identifier fields are accepted only when the parsed number converts back to the same integral value. If Handshake ever documents or emits identifiers outside the exactly representable integer range of that JSON surface, that becomes a real decoding-surface limitation rather than something this client should hide.
 
-Idriç PR #67 is separately restoring the stricter project-level `environment_value : String → IO (Maybe String)` wrapper after the source-layout rewrite. That wrapper rejects invalid environment-variable names and preserves unset versus empty. Handshake does not need to block on it: this client queries one fixed valid name and current `System.getEnv` already returns `Maybe String`.
+Idriç PR #67 is separately restoring the stricter project-level `environment_value : String → IO (Maybe String)` wrapper after the source-layout rewrite. Handshake does not need to block on it: this client queries fixed valid names and current `System.getEnv` already returns `Maybe String`.
 
-## Genuine remaining transport gap
+## Credential redirect boundary
 
-The current merged Idric-Net HTTP model already has typed HTTP header values, but its normal renderer supplies a fixed header set. Current merged ICU does not expose the response-body capture path this caller needs.
+ICU #13 supplies validated caller headers and `fetch_to_files_with_headers`. ICU #20, stacked directly on #13, adds `make_credential_header` and carries only the declared credential header names into native redirect handling.
 
-The pending ICU stack is closer:
+For Handshake the request is therefore constructed as a normal GET with a credential-tagged `x-api-key`. On same-origin redirects the full request header survives. On cross-origin redirects ICU removes `Authorization`, `Cookie`, and all caller-declared credential headers while preserving unrelated custom headers and rewriting `Host`.
 
-- ICU #12 adds file-backed raw response capture;
-- ICU #13 is stacked on #12 and adds validated caller-supplied request headers plus `fetch_to_files_with_headers`.
-
-So caller-header construction and response capture are not missing inventions. The remaining blocker is redirect credential semantics. ICU #13 strips `Authorization` and `Cookie` when a redirect changes scheme, host, or port, but preserves other custom headers. Current Idric-Net's header classifier makes the same name-based distinction.
-
-Handshake authenticates with `x-api-key`. On that pending generic path, `x-api-key` is therefore an ordinary custom header and could be forwarded to a cross-origin redirect target. ICU #19 tracks the needed shared surface: let the caller declare an arbitrary header credential-sensitive, or provide an equivalent policy, so same-origin redirects can retain it while cross-origin redirects remove it.
-
-Handshake therefore does **not** invent a private transport. `edu_icu_get` returns an explicit `Left` naming ICU #19, and live `jobs` and `roles` fail closed there. It does not substitute curl, Python, browser cookies, or a Handshake-specific socket path.
+Handshake does not invent a private transport. It does not substitute curl, Python, browser cookies, or a Handshake-specific socket path.
 
 ## Checkpoint ladder
 
-1. source parses/checks against current Idriç plus contrib;
+1. source parses/checks against current Idriç, contrib, and the current ICU header/capture stack;
 2. `url jobs` and `url roles` print the documented endpoints;
 3. `public JOB_ID` accepts decimal ids and rejects malformed ids;
 4. jobs fixture decodes, flattens embedded TSV-breaking whitespace, and matches its TSV receipt;
 5. job-role-group fixture decodes and matches its TSV receipt;
 6. process environment distinguishes missing and empty API keys;
-7. ICU/Idric-Net supports caller-declared credential-sensitive headers on its caller-header + response-capture path (ICU #19);
-8. one live `/jobs` page travels through that API with `x-api-key`;
-9. one live `/job_role_groups` page travels through the same boundary;
-10. cursor pagination is added without changing the one-page decoder contract;
-11. a separate analysis command joins jobs and role groups by `job_id` and reports classification evidence without altering raw observations.
+7. ICU proves caller-declared credential headers survive same-origin redirects and are stripped cross-origin;
+8. the Handshake executable traverses a deterministic same-origin then cross-origin redirect chain with synthetic `x-api-key` and returns the jobs fixture only if both header conditions hold;
+9. one actual `/jobs` page can be accepted with an authorized EDU key;
+10. one actual `/job_role_groups` page can be accepted through the same boundary;
+11. cursor pagination is added without changing the one-page decoder contract;
+12. a separate analysis command joins jobs and role groups by `job_id` and reports classification evidence without altering raw observations.
 
 ## Public-catalog follow-up
 
