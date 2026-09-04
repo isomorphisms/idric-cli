@@ -1,9 +1,11 @@
 module Handshake
 
 import Data.String
+import Http
 import Language.JSON
 import System
 import System.File
+import Transport
 
 
 edu_base : String
@@ -219,9 +221,18 @@ decode_roles_response body =
 
 -- System.getEnv already has exactly the Maybe-valued lookup needed here.
 -- Idriç's stricter environment_value wrapper is being restored separately,
--- but this client asks only for one fixed, valid environment-variable name.
+-- but this client asks only for fixed, valid environment-variable names.
 environment_value : String → IO (Maybe String)
 environment_value name = getEnv name
+
+
+environment_value_or : String → String → IO String
+environment_value_or name fallback = do
+  value ← environment_value name
+  case value of
+    Nothing => pure fallback
+    Just "" => pure fallback
+    Just text => pure text
 
 
 decimal_digit : Char → Bool
@@ -241,22 +252,67 @@ valid_job_id text =
       decimal_digits values
 
 
--- Genuine remaining dependency boundary:
--- merged ICU/Idric-Net does not yet expose the complete caller-header + body
--- capture path. Pending ICU #13 stacked on #12 has those mechanics, but its
--- cross-origin redirect policy strips only Authorization/Cookie credentials;
--- x-api-key remains an ordinary header. Fail closed until callers can mark an
--- arbitrary header credential-sensitive (ICU #19).
+cleanup_file : String → IO ()
+cleanup_file path = do
+  outcome ← removeFile path
+  case outcome of
+    Left _ => pure ()
+    Right () => pure ()
+
+cleanup_files : String → String → IO ()
+cleanup_files body_path metadata_path = do
+  cleanup_file body_path
+  cleanup_file metadata_path
+
+
 edu_icu_get : String → String → IO (Either String String)
 edu_icu_get api_key url =
-  pure
-    (Left
-      "live EDU GET pending ICU credential-safe x-api-key redirect policy (icu#19)")
+  case parse_url url of
+    Left problem =>
+      pure (Left ("invalid Handshake EDU URL: " ++ problem))
+    Right target_url =>
+      case make_credential_header "x-api-key" api_key of
+        Left _ =>
+          pure (Left "HANDSHAKE_EDU_API_KEY contains an invalid HTTP header character")
+        Right key_header => do
+          pid ← getPID
+          temp_root ← environment_value_or "TMPDIR" "/tmp"
+          let prefix = temp_root ++ "/idric-handshake-" ++ show pid
+          let body_path = prefix ++ ".json"
+          let metadata_path = prefix ++ ".meta"
+          fetch_result ←
+            fetch_to_files_with_headers
+              (get target_url)
+              [key_header]
+              body_path
+              metadata_path
+          case fetch_result of
+            Left problem => do
+              cleanup_files body_path metadata_path
+              pure (Left problem)
+            Right transport_code => do
+              body_result ← readFile body_path
+              cleanup_files body_path metadata_path
+              if transport_code /= 0
+                then pure
+                  (Left
+                    ("ICU request failed: transport_code=" ++ show transport_code))
+                else case body_result of
+                  Left _ => pure (Left "could not read Handshake EDU response body")
+                  Right body => pure (Right body)
 
+
+endpoint_url_from : String → endpoint → String
+endpoint_url_from base jobs_endpoint = base ++ "/jobs?page_size=100"
+endpoint_url_from base roles_endpoint = base ++ "/job_role_groups?page_size=100"
 
 endpoint_url : endpoint → String
-endpoint_url jobs_endpoint = edu_base ++ "/jobs?page_size=100"
-endpoint_url roles_endpoint = edu_base ++ "/job_role_groups?page_size=100"
+endpoint_url = endpoint_url_from edu_base
+
+live_endpoint_url : endpoint → IO String
+live_endpoint_url which = do
+  base ← environment_value_or "HANDSHAKE_EDU_BASE_URL" edu_base
+  pure (endpoint_url_from base which)
 
 
 parse_command : List String → Either String command
@@ -370,8 +426,12 @@ run (public_job job_id) =
 
 run (fixture_jobs path) = read_and_print print_jobs_response path
 run (fixture_roles path) = read_and_print print_roles_response path
-run fetch_jobs = fetch_and_print print_jobs_response (endpoint_url jobs_endpoint)
-run fetch_roles = fetch_and_print print_roles_response (endpoint_url roles_endpoint)
+run fetch_jobs = do
+  url ← live_endpoint_url jobs_endpoint
+  fetch_and_print print_jobs_response url
+run fetch_roles = do
+  url ← live_endpoint_url roles_endpoint
+  fetch_and_print print_roles_response url
 
 
 main : IO ()
