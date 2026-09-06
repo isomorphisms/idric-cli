@@ -1,0 +1,76 @@
+#!/usr/bin/env ysh
+
+# Manual SEC EDGAR checkpoint runner.
+# URL literals are checked without networking; Idriç typechecking is optional.
+
+set -u
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+IDRIC=${IDRIC:-idris2}
+SOURCE="$HERE/idric/Sec.idric"
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+
+status=0
+
+available() {
+  case "$1" in
+    */*) test -x "$1" ;;
+    *) command -v "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
+pass() {
+  printf 'PASS\t%s\n' "$1"
+}
+
+fail() {
+  printf 'FAIL\t%s\n' "$1"
+  status=1
+}
+
+skip() {
+  printf 'SKIP\t%s\n' "$1"
+}
+
+expect_source() {
+  label=$1
+  text=$2
+  if grep -Fq -- "$text" "$SOURCE"; then
+    pass "$label"
+  else
+    fail "$label"
+  fi
+}
+
+expect_source 'url/submissions' '/submissions/CIK'
+expect_source 'url/companyfacts' '/api/xbrl/companyfacts/CIK'
+expect_source 'url/companyconcept' '/api/xbrl/companyconcept/CIK'
+expect_source 'url/frame' '/api/xbrl/frames/'
+expect_source 'url/tickers' '/files/company_tickers.json'
+expect_source 'url/ticker-exchanges' '/files/company_tickers_exchange.json'
+expect_source 'url/mutual-fund-tickers' '/files/company_tickers_mf.json'
+expect_source 'url/bulk-submissions' '/Archives/edgar/daily-index/bulkdata/submissions.zip'
+expect_source 'url/bulk-companyfacts' '/Archives/edgar/daily-index/xbrl/companyfacts.zip'
+expect_source 'policy/user-agent' 'environment_value "SEC_USER_AGENT"'
+expect_source 'policy/user-agent-nonempty' 'Just "" => missing_user_agent'
+expect_source 'transport/icu-idric-net' '?icu_get_with_user_agent_and_forward_stdout'
+
+if ! available "$IDRIC"; then
+  skip "idric (not found: $IDRIC)"
+  exit "$status"
+fi
+
+if "$IDRIC" --check "$SOURCE" >"$TMP/idric" 2>"$TMP/idric.err"; then
+  pass 'idric/check'
+else
+  fail 'idric/check'
+  for path in "$TMP/idric" "$TMP/idric.err"; do
+    if test -s "$path"; then
+      sed 's/^/  /' "$path"
+    fi
+  done
+fi
+
+exit "$status"

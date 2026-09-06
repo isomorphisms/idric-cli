@@ -1,0 +1,104 @@
+module Sec
+
+import System
+
+
+data_api : String
+data_api = "https://data.sec.gov"
+
+sec_site : String
+sec_site = "https://www.sec.gov"
+
+submissions_bulk_url : String
+submissions_bulk_url = sec_site ++ "/Archives/edgar/daily-index/bulkdata/submissions.zip"
+
+companyfacts_bulk_url : String
+companyfacts_bulk_url = sec_site ++ "/Archives/edgar/daily-index/xbrl/companyfacts.zip"
+
+tickers_url : String
+tickers_url = sec_site ++ "/files/company_tickers.json"
+
+ticker_exchanges_url : String
+ticker_exchanges_url = sec_site ++ "/files/company_tickers_exchange.json"
+
+mutual_fund_tickers_url : String
+mutual_fund_tickers_url = sec_site ++ "/files/company_tickers_mf.json"
+
+usage : String
+usage = "usage: sec [url] {submissions CIK10 | companyfacts CIK10 | companyconcept CIK10 TAXONOMY TAG | frame TAXONOMY TAG UNIT PERIOD | tickers | ticker-exchanges | mutual-fund-tickers | bulk-submissions | bulk-companyfacts}"
+
+
+-- Public EDGAR data does not require an API key, but automated access must
+-- identify itself. Keep this header seam explicit at the ICU/Idric-Net
+-- boundary rather than quietly substituting curl or another HTTP client.
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+declared_icu_get : String → String → IO ()
+declared_icu_get user_agent url = ?icu_get_with_user_agent_and_forward_stdout
+
+
+submissions_url : String → String
+submissions_url cik =
+  data_api ++ "/submissions/CIK" ++ cik ++ ".json"
+
+companyfacts_url : String → String
+companyfacts_url cik =
+  data_api ++ "/api/xbrl/companyfacts/CIK" ++ cik ++ ".json"
+
+companyconcept_url : String → String → String → String
+companyconcept_url cik taxonomy tag =
+  data_api ++ "/api/xbrl/companyconcept/CIK" ++ cik ++ "/" ++ taxonomy ++ "/" ++ tag ++ ".json"
+
+frame_url : String → String → String → String → String
+frame_url taxonomy tag unit period =
+  data_api ++ "/api/xbrl/frames/" ++ taxonomy ++ "/" ++ tag ++ "/" ++ unit ++ "/" ++ period ++ ".json"
+
+
+endpoint_url : List String → Either String String
+endpoint_url ["submissions", cik] = Right (submissions_url cik)
+endpoint_url ["companyfacts", cik] = Right (companyfacts_url cik)
+endpoint_url ["companyconcept", cik, taxonomy, tag] = Right (companyconcept_url cik taxonomy tag)
+endpoint_url ["frame", taxonomy, tag, unit, period] = Right (frame_url taxonomy tag unit period)
+endpoint_url ["tickers"] = Right tickers_url
+endpoint_url ["ticker-exchanges"] = Right ticker_exchanges_url
+endpoint_url ["mutual-fund-tickers"] = Right mutual_fund_tickers_url
+endpoint_url ["bulk-submissions"] = Right submissions_bulk_url
+endpoint_url ["bulk-companyfacts"] = Right companyfacts_bulk_url
+endpoint_url _ = Left usage
+
+
+missing_user_agent : IO ()
+missing_user_agent = do
+  putStrLn "sec: missing or empty SEC_USER_AGENT (use a declared organization/name and contact email)"
+  exitFailure
+
+
+fetch : String → IO ()
+fetch url = do
+  maybe_user_agent ← environment_value "SEC_USER_AGENT"
+  case maybe_user_agent of
+    Just "" => missing_user_agent
+    Just user_agent => declared_icu_get user_agent url
+    Nothing => missing_user_agent
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: "url" :: rest =>
+      case endpoint_url rest of
+        Left problem => do
+          putStrLn problem
+          exitFailure
+        Right url => putStrLn url
+    _ :: rest =>
+      case endpoint_url rest of
+        Left problem => do
+          putStrLn problem
+          exitFailure
+        Right url => fetch url
+    [] => do
+      putStrLn usage
+      exitFailure
