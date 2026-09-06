@@ -53,7 +53,9 @@ expect_source 'url/ticker-exchanges' '/files/company_tickers_exchange.json'
 expect_source 'url/mutual-fund-tickers' '/files/company_tickers_mf.json'
 expect_source 'url/bulk-submissions' '/Archives/edgar/daily-index/bulkdata/submissions.zip'
 expect_source 'url/bulk-companyfacts' '/Archives/edgar/daily-index/xbrl/companyfacts.zip'
-expect_source 'policy/user-agent' 'SEC_USER_AGENT'
+expect_source 'policy/user-agent' 'environment_value "SEC_USER_AGENT"'
+expect_source 'policy/user-agent-nonempty' 'Just "" => missing_user_agent'
+expect_source 'transport/icu-idric-net' '?icu_get_with_user_agent_and_forward_stdout'
 
 if ! available "$IDRIC"; then
   skip "idric (not found: $IDRIC)"
