@@ -18,6 +18,7 @@ This repository is the consolidation point for the CLI/API-access programs that 
 - `Stripe.idric` — Stripe API checkpoint; first slice is pinned, read-only Balance access with a synthetic fixture and manual receipt.
 - `Reuters.idric` — Reuters GraphQL checkpoint.
 - `Wayback.idric` — Internet Archive Wayback/CDX checkpoint.
+- `IEX.md` — historical IEX Cloud REST/JSON API notes plus the current IEX Exchange TOPS → DEEP → DEEP+ binary parser track.
 
 The top-level `.idric` files are symbolic links to the canonical sources under `checkpoints/`, so the important source is visible without digging through directories.
 
