@@ -14,6 +14,7 @@ This repository is the consolidation point for the CLI/API-access programs that 
 - `Guardian.idric` — Guardian API checkpoint.
 - `Nyt.idric` — New York Times API checkpoint.
 - `Reddit.idric` — Reddit Data API checkpoint, with a synthetic fixture and manual receipt.
+- `Stripe.idric` — Stripe API checkpoint; first slice is pinned, read-only Balance access with a synthetic fixture and manual receipt.
 - `Reuters.idric` — Reuters GraphQL checkpoint.
 - `Wayback.idric` — Internet Archive Wayback/CDX checkpoint.
 
@@ -27,6 +28,6 @@ Where these clients need networking, ICU/Idric-Net remains the intended transpor
 
 ## Tests
 
-`make test` runs the existing Amazon and AbeBooks smoke tests. Reddit has a separate manual compiler checkpoint at `checkpoints/reddit/check`; it is not part of `make test` while named Idriç holes remain.
+`make test` runs the existing Amazon and AbeBooks smoke tests. Reddit and Stripe have separate manual compiler checkpoints under `checkpoints/reddit/check` and `checkpoints/stripe/check`; they are not part of `make test` while named Idriç holes remain.
 
 See `PROVENANCE.md` for the source branches copied into this repository.
