@@ -1,0 +1,133 @@
+module Stripe
+
+import System
+
+
+api_base : String
+api_base = "https://api.stripe.com"
+
+api_version : String
+api_version = "2026-08-26.dahlia"
+
+balance_path : String
+balance_path = "/v1/balance"
+
+header : String
+header = "state\tcurrency\tamount"
+
+usage : String
+usage = "usage: stripe {version | url balance | fixture FILE | balance}"
+
+
+choice command one_of
+  show_version
+  show_balance_url
+  fixture String
+  balance
+
+
+record Money where
+  constructor make_money
+  amount : Integer
+  currency : String
+
+
+record BalanceSnapshot where
+  constructor make_balance_snapshot
+  available : List Money
+  pending : List Money
+
+
+-- Named holes are intentional compiler/library watchpoints. Do not replace
+-- them with curl, Python, or another untyped transport merely to make the
+-- checkpoint appear green.
+
+read_fixture : String → IO (Either String String)
+read_fixture path = ?read_fixture_text
+
+decode_balance : String → Either String BalanceSnapshot
+decode_balance body = ?decode_stripe_balance
+
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+-- Stripe accepts bearer authentication. This seam needs caller-supplied
+-- Authorization and Stripe-Version headers through ICU/Idric-Net.
+authenticated_icu_get : String → String → String → IO (Either String String)
+authenticated_icu_get token version url = ?icu_get_with_request_headers
+
+
+balance_url : String
+balance_url = api_base ++ balance_path
+
+
+parse_command : List String → Either String command
+parse_command ["version"] = Right show_version
+parse_command ["url", "balance"] = Right show_balance_url
+parse_command ["fixture", path] = Right (fixture path)
+parse_command ["balance"] = Right balance
+parse_command _ = Left usage
+
+
+print_rows : String → List Money → IO ()
+print_rows state [] = pure ()
+print_rows state (value :: rest) = do
+  putStrLn (state ++ "\t" ++ value.currency ++ "\t" ++ show value.amount)
+  print_rows state rest
+
+
+print_balance : String → IO ()
+print_balance body =
+  case decode_balance body of
+    Left problem => do
+      putStrLn ("stripe: " ++ problem)
+      exitFailure
+    Right snapshot => do
+      putStrLn header
+      print_rows "available" snapshot.available
+      print_rows "pending" snapshot.pending
+
+
+run : command → IO ()
+run show_version =
+  putStrLn api_version
+
+run show_balance_url =
+  putStrLn balance_url
+
+run (fixture path) = do
+  outcome ← read_fixture path
+  case outcome of
+    Left problem => do
+      putStrLn ("stripe: " ++ problem)
+      exitFailure
+    Right body => print_balance body
+
+run balance = do
+  maybe_key ← environment_value "STRIPE_API_KEY"
+  case maybe_key of
+    Just key => do
+      outcome ← authenticated_icu_get key api_version balance_url
+      case outcome of
+        Left problem => do
+          putStrLn ("stripe: " ++ problem)
+          exitFailure
+        Right body => print_balance body
+    Nothing => do
+      putStrLn "stripe: missing STRIPE_API_KEY"
+      exitFailure
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: rest =>
+      case parse_command rest of
+        Left problem => do
+          putStrLn problem
+          exitFailure
+        Right value => run value
+    [] => do
+      putStrLn usage
+      exitFailure

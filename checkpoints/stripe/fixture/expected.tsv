@@ -1,0 +1,4 @@
+state	currency	amount
+available	usd	1250
+available	eur	900
+pending	usd	640
