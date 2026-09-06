@@ -1,0 +1,162 @@
+module JPMorgan
+
+import System
+
+
+api_base : String
+api_base = "https://api-mock.payments.jpmorgan.com/api/v2"
+
+api_spec_version : String
+api_spec_version = "2.19.0"
+
+header : String
+header = "transaction_id\trequest_id\tstate\tstatus\tcode\tamount\tcurrency"
+
+endpoints_text : String
+endpoints_text =
+  "method\tpath\taction\n" ++
+  "POST\t/payments\tcreate-payment\n" ++
+  "GET\t/payments\tretrieve-payment-by-request-id\n" ++
+  "GET\t/payments/{id}\tretrieve-payment-by-transaction-id\n" ++
+  "PATCH\t/payments/{id}\tupdate-payment\n" ++
+  "POST\t/payments/{id}/captures\tcapture-payment\n" ++
+  "GET\t/captures\tretrieve-capture-by-request-id\n" ++
+  "GET\t/captures/{id}\tretrieve-capture-by-transaction-id\n" ++
+  "POST\t/refunds\tcreate-refund\n" ++
+  "GET\t/refunds\tretrieve-refund-by-request-id\n" ++
+  "GET\t/refunds/{id}\tretrieve-refund-by-transaction-id\n" ++
+  "POST\t/verifications\tverify-payment-instrument\n" ++
+  "GET\t/verifications\tretrieve-verification-by-request-id\n" ++
+  "GET\t/verifications/{id}\tretrieve-verification-by-transaction-id\n" ++
+  "POST\t/fraudcheck\tfraud-check\n" ++
+  "GET\t/fraudcheck\tretrieve-fraud-check-by-request-id\n" ++
+  "GET\t/fraudcheck/{id}\tretrieve-fraud-check-by-transaction-id"
+
+usage : String
+usage = "usage: jpmorgan {version | endpoints | url payment ID | fixture FILE | payment ID}"
+
+
+choice command one_of
+  show_version
+  show_endpoints
+  show_payment_url String
+  fixture String
+  payment String
+
+
+record PaymentSnapshot where
+  constructor make_payment_snapshot
+  transaction_id : String
+  request_id : String
+  state : String
+  status : String
+  code : String
+  amount : Integer
+  currency : String
+
+
+-- Named holes are intentional compiler/library watchpoints. Do not replace
+-- them with curl, Python, or another untyped transport merely to make the
+-- checkpoint appear green.
+
+read_fixture : String → IO (Either String String)
+read_fixture path = ?read_fixture_text
+
+decode_payment : String → Either String PaymentSnapshot
+decode_payment body = ?decode_jpmorgan_payment
+
+environment_value : String → IO (Maybe String)
+environment_value name = ?read_environment_value
+
+new_request_id : IO String
+new_request_id = ?uuid_v4_text
+
+-- Online Payments uses OAuth bearer authentication plus merchant-id and
+-- request-id headers. ICU/Idric-Net should own the generic header transport.
+authenticated_icu_get : String → String → String → String → IO (Either String String)
+authenticated_icu_get token merchant_id request_id url = ?icu_get_with_request_headers
+
+
+payment_url : String → String
+payment_url transaction_id = api_base ++ "/payments/" ++ transaction_id
+
+
+parse_command : List String → Either String command
+parse_command ["version"] = Right show_version
+parse_command ["endpoints"] = Right show_endpoints
+parse_command ["url", "payment", transaction_id] = Right (show_payment_url transaction_id)
+parse_command ["fixture", path] = Right (fixture path)
+parse_command ["payment", transaction_id] = Right (payment transaction_id)
+parse_command _ = Left usage
+
+
+print_payment : String → IO ()
+print_payment body =
+  case decode_payment body of
+    Left problem => do
+      putStrLn ("jpmorgan: " ++ problem)
+      exitFailure
+    Right snapshot => do
+      putStrLn header
+      putStrLn (snapshot.transaction_id ++ "\t" ++
+                snapshot.request_id ++ "\t" ++
+                snapshot.state ++ "\t" ++
+                snapshot.status ++ "\t" ++
+                snapshot.code ++ "\t" ++
+                show snapshot.amount ++ "\t" ++
+                snapshot.currency)
+
+
+run : command → IO ()
+run show_version =
+  putStrLn api_spec_version
+
+run show_endpoints =
+  putStrLn endpoints_text
+
+run (show_payment_url transaction_id) =
+  putStrLn (payment_url transaction_id)
+
+run (fixture path) = do
+  outcome ← read_fixture path
+  case outcome of
+    Left problem => do
+      putStrLn ("jpmorgan: " ++ problem)
+      exitFailure
+    Right body => print_payment body
+
+run (payment transaction_id) = do
+  maybe_token ← environment_value "JPMORGAN_ACCESS_TOKEN"
+  maybe_merchant_id ← environment_value "JPMORGAN_MERCHANT_ID"
+  case maybe_token of
+    Nothing => do
+      putStrLn "jpmorgan: missing JPMORGAN_ACCESS_TOKEN"
+      exitFailure
+    Just token =>
+      case maybe_merchant_id of
+        Nothing => do
+          putStrLn "jpmorgan: missing JPMORGAN_MERCHANT_ID"
+          exitFailure
+        Just merchant_id => do
+          request_id ← new_request_id
+          outcome ← authenticated_icu_get token merchant_id request_id (payment_url transaction_id)
+          case outcome of
+            Left problem => do
+              putStrLn ("jpmorgan: " ++ problem)
+              exitFailure
+            Right body => print_payment body
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: rest =>
+      case parse_command rest of
+        Left problem => do
+          putStrLn problem
+          exitFailure
+        Right value => run value
+    [] => do
+      putStrLn usage
+      exitFailure

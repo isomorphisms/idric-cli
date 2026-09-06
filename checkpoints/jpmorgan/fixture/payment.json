@@ -1,0 +1,48 @@
+{
+  "transactionId": "11111111-2222-4333-8444-555555555555",
+  "requestId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "transactionState": "CLOSED",
+  "responseStatus": "SUCCESS",
+  "responseCode": "APPROVED",
+  "responseMessage": "Synthetic fixture approved",
+  "paymentMethodType": {
+    "card": {
+      "cardType": "VI",
+      "cardTypeName": "VISA",
+      "maskedAccountNumber": "411111XXXXXX1111"
+    }
+  },
+  "captureMethod": "NOW",
+  "amount": 1000,
+  "currency": "USD",
+  "remainingRefundableAmount": 1000,
+  "remainingAuthAmount": 0,
+  "merchant": {
+    "merchantId": "000000000000",
+    "merchantSoftware": {
+      "companyName": "Synthetic Fixture",
+      "productName": "Idric CLI"
+    },
+    "merchantCategoryCode": "0000"
+  },
+  "paymentRequest": {
+    "paymentRequestId": "11111111-2222-4333-8444-555555555555",
+    "paymentRequestStatus": "CLOSED",
+    "authorizations": [
+      {
+        "authorizationId": "11111111-2222-4333-8444-555555555555",
+        "amount": 1000,
+        "transactionStatusCode": "CAPTURED",
+        "authorizationType": "INITIAL"
+      }
+    ],
+    "captures": [
+      {
+        "captureId": "11111111-2222-4333-8444-555555555555",
+        "amount": 1000,
+        "transactionStatusCode": "CLOSED",
+        "captureRemainingRefundableAmount": 1000
+      }
+    ]
+  }
+}

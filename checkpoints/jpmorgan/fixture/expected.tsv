@@ -1,0 +1,2 @@
+transaction_id	request_id	state	status	code	amount	currency
+11111111-2222-4333-8444-555555555555	aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee	CLOSED	SUCCESS	APPROVED	1000	USD

@@ -12,6 +12,7 @@ This repository is the consolidation point for the CLI/API-access programs that 
 - `Economist.idric` — Economist API checkpoint.
 - `Ft.idric` — Financial Times API checkpoint.
 - `Guardian.idric` — Guardian API checkpoint.
+- `JPMorgan.idric` — J.P. Morgan Online Payments API checkpoint; complete v2 endpoint inventory plus a first read-only payment-retrieval slice.
 - `Nyt.idric` — New York Times API checkpoint.
 - `Reddit.idric` — Reddit Data API checkpoint, with a synthetic fixture and manual receipt.
 - `Stripe.idric` — Stripe API checkpoint; first slice is pinned, read-only Balance access with a synthetic fixture and manual receipt.
@@ -28,6 +29,6 @@ Where these clients need networking, ICU/Idric-Net remains the intended transpor
 
 ## Tests
 
-`make test` runs the existing Amazon and AbeBooks smoke tests. Reddit and Stripe have separate manual compiler checkpoints under `checkpoints/reddit/check` and `checkpoints/stripe/check`; they are not part of `make test` while named Idriç holes remain.
+`make test` runs the existing Amazon and AbeBooks smoke tests. Reddit, Stripe, and J.P. Morgan have separate manual compiler checkpoints under `checkpoints/`; they are not part of `make test` while named Idriç holes remain.
 
 See `PROVENANCE.md` for the source branches copied into this repository.
