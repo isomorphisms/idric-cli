@@ -68,14 +68,19 @@ endpoint_url ["bulk-companyfacts"] = Right companyfacts_bulk_url
 endpoint_url _ = Left usage
 
 
+missing_user_agent : IO ()
+missing_user_agent = do
+  putStrLn "sec: missing or empty SEC_USER_AGENT (use a declared organization/name and contact email)"
+  exitFailure
+
+
 fetch : String → IO ()
 fetch url = do
   maybe_user_agent ← environment_value "SEC_USER_AGENT"
   case maybe_user_agent of
+    Just "" => missing_user_agent
     Just user_agent => declared_icu_get user_agent url
-    Nothing => do
-      putStrLn "sec: missing SEC_USER_AGENT (use a declared organization/name and contact email)"
-      exitFailure
+    Nothing => missing_user_agent
 
 
 main : IO ()
