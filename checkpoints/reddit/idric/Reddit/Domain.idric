@@ -1,0 +1,65 @@
+module Reddit.Domain
+
+import Data.Text
+
+
+public export
+choice RedditFailure one_of
+  invalid_query Text
+  invalid_fixture Text
+  invalid_response Text
+  missing_credentials Text
+  unavailable_transport Text
+
+public export
+record SearchQuery where
+  constructor accepted_search_query
+  text : Text
+
+public export
+record RedditCredentials where
+  constructor reddit_credentials
+  access_token : Text
+  user_agent : Text
+
+public export
+record RedditPost where
+  constructor reddit_post
+  created_utc : ±Number
+  score : ±Number
+  subreddit : Text
+  author : Text
+  title : Text
+  permalink : Text
+
+
+within_search_limit : ±Number → List Char → Bool
+within_search_limit remaining [] = True
+within_search_limit 0 (_ :: _) = False
+within_search_limit remaining (_ :: rest) =
+  within_search_limit (remaining - 1) rest
+
+
+export
+search_query : Text → Either RedditFailure SearchQuery
+search_query text =
+  case unpack text of
+    [] =>
+      Left (invalid_query "search query is empty")
+    characters =>
+      if within_search_limit 512 characters
+        then Right (accepted_search_query text)
+        else Left (invalid_query "search query exceeds Reddit's 512-character limit")
+
+export
+query_text : SearchQuery → Text
+query_text (accepted_search_query text) = text
+
+
+export
+failure_text : RedditFailure → Text
+failure_text (invalid_query problem) = problem
+failure_text (invalid_fixture problem) = problem
+failure_text (invalid_response problem) = problem
+failure_text (missing_credentials problem) = problem
+failure_text (unavailable_transport problem) = problem
