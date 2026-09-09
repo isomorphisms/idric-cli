@@ -1,0 +1,67 @@
+module Reddit.Program
+
+import Data.Text
+import Reddit.Access
+import Reddit.Domain
+import Reddit.Presentation
+import Reddit.Request
+import System
+
+
+export
+run_reddit : IO ()
+run_reddit = do
+  requested ← requested_reddit_action
+  case requested of
+    Left problem => report_failure problem
+    Right action => perform_reddit_action action
+
+
+usage : Text
+usage = "usage: reddit {search QUERY | fixture FILE | url QUERY}"
+
+choice RedditAction one_of
+  search_for_posts SearchQuery
+  inspect_fixture Text
+  show_search_address SearchQuery
+
+
+requested_reddit_action : IO (Either RedditFailure RedditAction)
+requested_reddit_action = do
+  arguments ← getArgs
+  case arguments of
+    _ :: rest => pure (understand_arguments rest)
+    [] => pure (Left (invalid_command usage))
+
+understand_arguments : List Text → Either RedditFailure RedditAction
+understand_arguments ["search", text] = do
+  query ← search_query text
+  pure (search_for_posts query)
+understand_arguments ["fixture", path] =
+  Right (inspect_fixture path)
+understand_arguments ["url", text] = do
+  query ← search_query text
+  pure (show_search_address query)
+understand_arguments _ =
+  Left (invalid_command usage)
+
+
+present_outcome : Either RedditFailure (List RedditPost) → IO ()
+present_outcome (Left problem) = report_failure problem
+present_outcome (Right posts) = present_posts posts
+
+perform_reddit_action : RedditAction → IO ()
+perform_reddit_action (search_for_posts query) = do
+  posts ← search_reddit query
+  present_outcome posts
+perform_reddit_action (inspect_fixture path) = do
+  posts ← read_reddit_fixture path
+  present_outcome posts
+perform_reddit_action (show_search_address query) =
+  putStrLn (search_url query)
+
+
+report_failure : RedditFailure → IO ()
+report_failure problem = do
+  putStrLn ("reddit: " ++ failure_text problem)
+  exitFailure
