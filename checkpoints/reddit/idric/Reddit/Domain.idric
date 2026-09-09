@@ -5,6 +5,7 @@ import Data.Text
 
 public export
 choice RedditFailure one_of
+  invalid_command Text
   invalid_query Text
   invalid_fixture Text
   invalid_response Text
@@ -58,6 +59,7 @@ query_text (accepted_search_query text) = text
 
 export
 failure_text : RedditFailure → Text
+failure_text (invalid_command problem) = problem
 failure_text (invalid_query problem) = problem
 failure_text (invalid_fixture problem) = problem
 failure_text (invalid_response problem) = problem
