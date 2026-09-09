@@ -1,0 +1,25 @@
+module Indeed
+
+import System
+
+
+employer_account_only : String
+employer_account_only = "Indeed Hiring Insights is available to employer accounts only."
+
+usage : String
+usage = "usage: indeed insights TITLE LOCATION"
+
+
+hiring_insights : String → String → String
+hiring_insights title location = employer_account_only
+
+
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: "insights" :: title :: location :: [] =>
+      putStrLn (hiring_insights title location)
+    _ => do
+      putStrLn usage
+      exitFailure
