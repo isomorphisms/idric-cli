@@ -1,0 +1,102 @@
+module Reddit.Listing
+
+import Data.Text
+import Language.JSON
+import Reddit.Domain
+
+
+json_field : Text → JSON → Maybe JSON
+json_field name object = Language.JSON.lookup name object
+
+required_text : Text → JSON → Either RedditFailure Text
+required_text name object =
+  case json_field name object of
+    Just (JString value) =>
+      Right value
+    Just _ =>
+      Left (invalid_response ("field " ++ name ++ " must be text"))
+    Nothing =>
+      Left (invalid_response ("missing field " ++ name))
+
+required_whole_number : Text → JSON → Either RedditFailure ±Number
+required_whole_number name object =
+  case json_field name object of
+    Just (JNumber value) =>
+      let whole : ±Number = cast value
+      in if cast whole == value
+           then Right whole
+           else Left (invalid_response ("field " ++ name ++ " must be a whole number"))
+    Just _ =>
+      Left (invalid_response ("field " ++ name ++ " must be a whole number"))
+    Nothing =>
+      Left (invalid_response ("missing field " ++ name))
+
+post_data : JSON → Either RedditFailure JSON
+post_data child@(JObject _) =
+  case json_field "kind" child of
+    Just (JString "t3") =>
+      case json_field "data" child of
+        Just object@(JObject _) => Right object
+        Just _ => Left (invalid_response "Reddit post data must be an object")
+        Nothing => Left (invalid_response "Reddit post is missing data")
+    Just (JString kind) =>
+      Left (invalid_response ("search child is not a post: " ++ kind))
+    Just _ =>
+      Left (invalid_response "search child kind must be text")
+    Nothing =>
+      Left (invalid_response "search child is missing kind")
+post_data _ =
+  Left (invalid_response "each search child must be an object")
+
+
+decode_post : JSON → Either RedditFailure RedditPost
+decode_post child = do
+  object ← post_data child
+  created ← required_whole_number "created_utc" object
+  score ← required_whole_number "score" object
+  subreddit ← required_text "subreddit" object
+  author ← required_text "author" object
+  title ← required_text "title" object
+  permalink ← required_text "permalink" object
+  pure (reddit_post created score subreddit author title permalink)
+
+
+decode_posts : List JSON → Either RedditFailure (List RedditPost)
+decode_posts [] = Right []
+decode_posts (child :: rest) = do
+  post ← decode_post child
+  posts ← decode_posts rest
+  pure (post :: posts)
+
+
+listing_children : JSON → Either RedditFailure (List JSON)
+listing_children document@(JObject _) =
+  case json_field "kind" document of
+    Just (JString "Listing") =>
+      case json_field "data" document of
+        Just data_object@(JObject _) =>
+          case json_field "children" data_object of
+            Just (JArray children) => Right children
+            Just _ => Left (invalid_response "Listing.data.children must be an array")
+            Nothing => Left (invalid_response "Listing.data is missing children")
+        Just _ => Left (invalid_response "Listing.data must be an object")
+        Nothing => Left (invalid_response "Listing is missing data")
+    Just (JString kind) =>
+      Left (invalid_response ("response is not a Listing: " ++ kind))
+    Just _ =>
+      Left (invalid_response "response kind must be text")
+    Nothing =>
+      Left (invalid_response "response is missing kind")
+listing_children _ =
+  Left (invalid_response "Reddit response must be a JSON object")
+
+
+export
+decode_listing : Text → Either RedditFailure (List RedditPost)
+decode_listing body =
+  case Language.JSON.parse body of
+    Nothing =>
+      Left (invalid_response "Reddit response is not valid JSON")
+    Just document => do
+      children ← listing_children document
+      decode_posts children
