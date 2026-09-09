@@ -1,0 +1,75 @@
+module Reddit.Access
+
+import Data.Text
+import Reddit.Domain
+import Reddit.Listing
+import Reddit.Request
+import System
+import System.File
+
+
+export
+read_reddit_fixture : Text → IO (Either RedditFailure (List RedditPost))
+read_reddit_fixture path = do
+  outcome ← readFile path
+  case outcome of
+    Left problem =>
+      pure
+        (Left
+          (invalid_fixture
+            ("could not read Reddit fixture " ++ path ++ ": " ++ show problem)))
+    Right body =>
+      pure (decode_listing body)
+
+
+credentials_from_environment : IO (Either RedditFailure RedditCredentials)
+credentials_from_environment = do
+  token ← getEnv "REDDIT_ACCESS_TOKEN"
+  agent ← getEnv "REDDIT_USER_AGENT"
+  case (token, agent) of
+    (Nothing, _) =>
+      pure (Left (missing_credentials "missing REDDIT_ACCESS_TOKEN"))
+    (Just "", _) =>
+      pure (Left (missing_credentials "REDDIT_ACCESS_TOKEN is empty"))
+    (_, Nothing) =>
+      pure (Left (missing_credentials "missing REDDIT_USER_AGENT"))
+    (_, Just "") =>
+      pure (Left (missing_credentials "REDDIT_USER_AGENT is empty"))
+    (Just access_token, Just user_agent) =>
+      pure (Right (reddit_credentials access_token user_agent))
+
+
+-- Live access must use the checked ICU/Idric-Net request path. Reddit requires
+-- both OAuth Authorization and a descriptive User-Agent. The maintained ICU
+-- branch does not yet expose that caller-header surface, so this boundary
+-- refuses execution rather than substituting curl, Python, or a private socket
+-- client. Replace this function when that shared surface lands.
+authenticated_reddit_get :
+  RedditCredentials →
+  Text →
+  IO (Either RedditFailure Text)
+authenticated_reddit_get _ _ =
+  pure
+    (Left
+      (unavailable_transport
+        "live Reddit search requires the pending ICU caller-header surface"))
+
+
+search_reddit_using :
+  RedditCredentials →
+  SearchQuery →
+  IO (Either RedditFailure (List RedditPost))
+search_reddit_using credentials query = do
+  response ← authenticated_reddit_get credentials (search_url query)
+  case response of
+    Left problem => pure (Left problem)
+    Right body => pure (decode_listing body)
+
+
+export
+search_reddit : SearchQuery → IO (Either RedditFailure (List RedditPost))
+search_reddit query = do
+  credentials ← credentials_from_environment
+  case credentials of
+    Left problem => pure (Left problem)
+    Right accepted => search_reddit_using accepted query
