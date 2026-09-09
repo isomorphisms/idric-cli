@@ -1,0 +1,74 @@
+module Reddit.Request
+
+import Data.Text
+import Reddit.Domain
+
+
+reddit_search_endpoint : Text
+reddit_search_endpoint = "https://oauth.reddit.com/search"
+
+
+unreserved_ascii : Char → Bool
+unreserved_ascii character =
+  (character >= 'a' && character <= 'z') ||
+  (character >= 'A' && character <= 'Z') ||
+  (character >= '0' && character <= '9') ||
+  character == '-' ||
+  character == '.' ||
+  character == '_' ||
+  character == '~'
+
+hex_digit : Int → Char
+hex_digit value =
+  if value < 10
+    then chr (ord '0' + value)
+    else chr (ord 'A' + value - 10)
+
+percent_byte : Int → Text
+percent_byte byte =
+  pack
+    [ '%'
+    , hex_digit (div byte 16)
+    , hex_digit (mod byte 16)
+    ]
+
+percent_codepoint : Int → Text
+percent_codepoint codepoint =
+  if codepoint <= 0x7f
+    then percent_byte codepoint
+    else if codepoint <= 0x7ff
+      then
+        percent_byte (0xc0 + div codepoint 64) ++
+        percent_byte (0x80 + mod codepoint 64)
+      else if codepoint <= 0xffff
+        then
+          percent_byte (0xe0 + div codepoint 4096) ++
+          percent_byte (0x80 + mod (div codepoint 64) 64) ++
+          percent_byte (0x80 + mod codepoint 64)
+        else
+          percent_byte (0xf0 + div codepoint 262144) ++
+          percent_byte (0x80 + mod (div codepoint 4096) 64) ++
+          percent_byte (0x80 + mod (div codepoint 64) 64) ++
+          percent_byte (0x80 + mod codepoint 64)
+
+percent_encode_character : Char → Text
+percent_encode_character character =
+  if unreserved_ascii character
+    then pack [character]
+    else percent_codepoint (ord character)
+
+percent_encode_characters : List Char → Text
+percent_encode_characters [] = ""
+percent_encode_characters (character :: rest) =
+  percent_encode_character character ++ percent_encode_characters rest
+
+percent_encode : Text → Text
+percent_encode text = percent_encode_characters (unpack text)
+
+
+export
+search_url : SearchQuery → Text
+search_url query =
+  reddit_search_endpoint ++
+  "?raw_json=1&limit=25&sort=relevance&t=all&q=" ++
+  percent_encode (query_text query)
