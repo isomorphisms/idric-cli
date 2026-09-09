@@ -1,0 +1,93 @@
+# Indeed endpoint and operation inventory
+# Snapshot: 2026-09-09
+
+# OAuth / OpenID Connect
+GET  https://secure.indeed.com/oauth/v2/authorize
+POST https://apis.indeed.com/oauth/v2/tokens
+GET  https://secure.indeed.com/v2/api/appinfo
+GET  https://secure.indeed.com/v2/api/userinfo
+GET  https://secure.indeed.com/.well-known/keys
+
+# Main GraphQL transport
+POST https://apis.indeed.com/graphql
+
+# Common GraphQL
+GRAPHQL QUERY    node
+GRAPHQL QUERY    nodes
+
+# Job Sync
+GRAPHQL MUTATION jobsIngest.createSourcedJobPostings
+GRAPHQL MUTATION jobsIngest.expireSourcedJobsBySourcedPostingId
+
+# Job Update
+GRAPHQL QUERY    findEmployerJobsPartner
+GRAPHQL MUTATION jobsIngest.updateSourcedJobPostings
+GRAPHQL MUTATION jobsIngest.clearSourcedJobPostingUpdates
+GRAPHQL MUTATION jobsIngest.addSeats
+GRAPHQL MUTATION jobsIngest.updateSeats
+GRAPHQL MUTATION jobsIngest.clearSeats
+
+# Permissioned job retrieval example in Indeed auth docs
+GRAPHQL QUERY    jobSearch
+
+# Employer Registration
+GRAPHQL MUTATION partnerAtsSyncEmployerRegistration.registerEmployer
+GRAPHQL MUTATION partnerAtsSyncEmployerRegistration.manageFeaturesForEmployer
+GRAPHQL QUERY    partnerAtsSyncEmployerRegistration.findRegisteredEmployers
+GRAPHQL MUTATION partnerAtsSyncEmployerRegistration.deregisterEmployer
+
+# Send Candidates
+GRAPHQL MUTATION atsSyncCandidateSync.application.initialize
+GRAPHQL MUTATION atsSyncCandidateSync.application.submit
+GRAPHQL QUERY    atsSyncCandidateSync.application.findStatuses
+GRAPHQL MUTATION atsSyncCandidateSync.application.delete
+
+# Retrieve Candidates
+GRAPHQL MUTATION atsSyncCandidateSync.fetchAssets
+GRAPHQL QUERY    atsSyncCandidateSync.assetsByTimeRange
+GRAPHQL MUTATION atsSyncCandidateSync.stageAssets
+
+# Disposition Sync
+GRAPHQL MUTATION partnerDisposition.send
+
+# Hiring Lab
+GRAPHQL QUERY    findHiringLabPostingsPublic
+GRAPHQL QUERY    findHiringLabRemotePublic
+GRAPHQL QUERY    findHiringLabWagesPublic
+GRAPHQL QUERY    findHiringLabAiPublic
+GRAPHQL QUERY    findHiringLabCountriesPublic
+GRAPHQL QUERY    findHiringLabSectorsPublic
+GRAPHQL QUERY    findHiringLabGeographiesPublic
+GRAPHQL QUERY    findHiringLabRegionsPublic
+GRAPHQL QUERY    allHiringLabDatasetsPublic
+
+# Indeed PLUS / Employer Data
+GRAPHQL MUTATION patchEmployer
+
+# Real-time API (server-sent events)
+GET https://apis.indeed.com/sse/notifications/message-update
+
+# SCIM 2.0 Users API
+GET    https://api.indeed.com/scim/v2/Users
+POST   https://api.indeed.com/scim/v2/Users
+GET    https://api.indeed.com/scim/v2/Users/{id}
+PUT    https://api.indeed.com/scim/v2/Users/{id}
+DELETE https://api.indeed.com/scim/v2/Users/{id}
+
+# Canonical full GraphQL SDL
+GET https://docs.indeed.com/public_graphql_schema.graphqls
+
+# Protocol surfaces without one universal request URL
+PROTOCOL Indeed Apply application POST callback to partner postUrl
+PROTOCOL Job Sync XML feed
+PROTOCOL jobs lifecycle webhooks to partner endpoint
+PROTOCOL Disposition Data CSV signed-upload workflow
+PROTOCOL Sponsored Jobs API: separate provisioned Developer Portal reference
+PROTOCOL Publisher JavaScript Plugin
+PROTOCOL ATS JavaScript Plugin
+PROTOCOL Apply with Indeed
+
+# Deprecated / not open
+DEPRECATED Indeed Interview API
+RETIRED    old Publisher Job Search API
+REMOVED    simulated GraphQL environment (2026-06-30)
