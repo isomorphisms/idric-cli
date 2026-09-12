@@ -1,0 +1,254 @@
+module CourtListener
+
+import Language.JSON
+import Network.HTTP
+import Network.URL
+import System
+
+%default total
+
+public export
+record CourtListener_Query where
+  constructor Make_CourtListener_Query
+  query_text : String
+
+public export
+record CourtListener_Case_Name where
+  constructor Make_CourtListener_Case_Name
+  case_name_text : String
+
+public export
+record CourtListener_URL where
+  constructor Make_CourtListener_URL
+  url_text : String
+
+public export
+record CourtListener_Search_Request where
+  constructor Make_CourtListener_Search_Request
+  search_query : CourtListener_Query
+  search_url : CourtListener_URL
+  http_request : request
+
+public export
+record CourtListener_Search_Result where
+  constructor Make_CourtListener_Search_Result
+  case_name : CourtListener_Case_Name
+  court : Maybe String
+  date_filed : Maybe String
+  citations : List String
+  absolute_url : CourtListener_URL
+
+public export
+choice courtlistener_failure one_of
+  invalid_query String
+  invalid_request String
+  network_failure Int
+  http_failure String
+  invalid_json
+  invalid_search_response String
+
+api_base : String
+api_base = "https://www.courtlistener.com/api/rest/v4/search/"
+
+site_base : String
+site_base = "https://www.courtlistener.com"
+
+hex_digit : Int → Char
+hex_digit 0 = '0'
+hex_digit 1 = '1'
+hex_digit 2 = '2'
+hex_digit 3 = '3'
+hex_digit 4 = '4'
+hex_digit 5 = '5'
+hex_digit 6 = '6'
+hex_digit 7 = '7'
+hex_digit 8 = '8'
+hex_digit 9 = '9'
+hex_digit 10 = 'A'
+hex_digit 11 = 'B'
+hex_digit 12 = 'C'
+hex_digit 13 = 'D'
+hex_digit 14 = 'E'
+hex_digit _ = 'F'
+
+unreserved : Char → Bool
+unreserved character =
+  (character >= 'A' && character <= 'Z') ||
+  (character >= 'a' && character <= 'z') ||
+  (character >= '0' && character <= '9') ||
+  character == '-' || character == '.' || character == '_' || character == '~'
+
+ascii_query : List Char → Bool
+ascii_query [] = True
+ascii_query (character :: rest) = ord character < 128 && ascii_query rest
+
+percent_encode_ascii_chars : List Char → List Char
+percent_encode_ascii_chars [] = []
+percent_encode_ascii_chars (character :: rest) =
+  if unreserved character
+    then character :: percent_encode_ascii_chars rest
+    else
+      let number = ord character in
+        '%' :: hex_digit (number `div` 16) :: hex_digit (number `mod` 16) ::
+        percent_encode_ascii_chars rest
+
+percent_encode_ascii : String → String
+percent_encode_ascii text = pack (percent_encode_ascii_chars (unpack text))
+
+public export
+courtlistener_query : String → Either courtlistener_failure CourtListener_Query
+courtlistener_query text =
+  if text == ""
+    then Left (invalid_query "query must not be empty")
+    else if ascii_query (unpack text)
+      then Right (Make_CourtListener_Query text)
+      else Left (invalid_query "the first slice accepts ASCII queries only")
+
+public export
+build_search_request :
+  CourtListener_Query → Either courtlistener_failure CourtListener_Search_Request
+build_search_request query =
+  let text = api_base ++ "?q=" ++ percent_encode_ascii query.query_text ++ "&type=o" in
+  case parse_url text of
+    Left problem => Left (invalid_request problem)
+    Right target => Right
+      (Make_CourtListener_Search_Request
+        query
+        (Make_CourtListener_URL text)
+        (get target))
+
+object_field : String → List (String, JSON) → Maybe JSON
+object_field wanted [] = Nothing
+object_field wanted ((name, value) :: rest) =
+  if wanted == name then Just value else object_field wanted rest
+
+required_string : String → List (String, JSON) → Either String String
+required_string name object =
+  case object_field name object of
+    Just (JString value) => Right value
+    Just _ => Left (name ++ " is not a string")
+    Nothing => Left ("missing " ++ name)
+
+optional_string : String → List (String, JSON) → Either String (Maybe String)
+optional_string name object =
+  case object_field name object of
+    Just (JString value) => Right (Just value)
+    Just JNull => Right Nothing
+    Just _ => Left (name ++ " is neither a string nor null")
+    Nothing => Right Nothing
+
+string_array_values : List JSON → Either String (List String)
+string_array_values [] = Right []
+string_array_values (JString value :: rest) =
+  case string_array_values rest of
+    Left problem => Left problem
+    Right values => Right (value :: values)
+string_array_values (_ :: _) = Left "citation contains a non-string value"
+
+citations_field : List (String, JSON) → Either String (List String)
+citations_field object =
+  case object_field "citation" object of
+    Just (JArray values) => string_array_values values
+    Just JNull => Right []
+    Just _ => Left "citation is not an array"
+    Nothing => Right []
+
+decode_result : JSON → Either String CourtListener_Search_Result
+decode_result (JObject object) = do
+  case_name_text ← required_string "caseName" object
+  court_name ← optional_string "court" object
+  filed ← optional_string "dateFiled" object
+  citation_values ← citations_field object
+  path ← required_string "absolute_url" object
+  pure
+    (Make_CourtListener_Search_Result
+      (Make_CourtListener_Case_Name case_name_text)
+      court_name
+      filed
+      citation_values
+      (Make_CourtListener_URL (site_base ++ path)))
+decode_result _ = Left "search result is not an object"
+
+decode_results : List JSON → Either String (List CourtListener_Search_Result)
+decode_results [] = Right []
+decode_results (value :: rest) = do
+  decoded ← decode_result value
+  remaining ← decode_results rest
+  pure (decoded :: remaining)
+
+decode_root : JSON → Either String (List CourtListener_Search_Result)
+decode_root (JObject object) =
+  case object_field "results" object of
+    Just (JArray values) => decode_results values
+    Just _ => Left "results is not an array"
+    Nothing => Left "missing results"
+decode_root _ = Left "response root is not an object"
+
+public export
+decode_search_response :
+  String → Either courtlistener_failure (List CourtListener_Search_Result)
+decode_search_response body =
+  case Language.JSON.parse body of
+    Nothing => Left invalid_json
+    Just value =>
+      case decode_root value of
+        Left problem => Left (invalid_search_response problem)
+        Right results => Right results
+
+icu_arguments : String → Maybe String → CourtListener_Search_Request → List String
+icu_arguments executable Nothing value =
+  [executable, "get", value.search_url.url_text]
+icu_arguments executable (Just token) value =
+  [ executable
+  , "get"
+  , "-H"
+  , "Authorization: Token " ++ token
+  , value.search_url.url_text
+  ]
+
+public export
+covering
+perform_search :
+  CourtListener_Search_Request → IO (Either courtlistener_failure (List CourtListener_Search_Result))
+perform_search value = do
+  maybe_icu ← getEnv "ICU"
+  maybe_token ← getEnv "COURTLISTENER_API_TOKEN"
+  let executable = case maybe_icu of
+        Nothing => "icu"
+        Just path => path
+  (body, status) ← run (icu_arguments executable maybe_token value)
+  if status == 0
+    then pure (decode_search_response body)
+    else if status == 10
+      then pure (Left (http_failure body))
+      else pure (Left (network_failure status))
+
+join_with : String → List String → String
+join_with separator [] = ""
+join_with separator [value] = value
+join_with separator (value :: rest) = value ++ separator ++ join_with separator rest
+
+show_optional : Maybe String → String
+show_optional Nothing = "—"
+show_optional (Just value) = value
+
+public export
+render_search_result : CourtListener_Search_Result → String
+render_search_result result =
+  result.case_name.case_name_text ++ "\n" ++
+  "  court: " ++ show_optional result.court ++ "\n" ++
+  "  filed: " ++ show_optional result.date_filed ++ "\n" ++
+  "  citation: " ++
+    (if result.citations == [] then "—" else join_with "; " result.citations) ++ "\n" ++
+  "  url: " ++ result.absolute_url.url_text
+
+public export
+render_failure : courtlistener_failure → String
+render_failure (invalid_query problem) = "courtlistener: invalid query: " ++ problem
+render_failure (invalid_request problem) = "courtlistener: invalid request: " ++ problem
+render_failure (network_failure status) =
+  "courtlistener: ICU network/transport failure (exit " ++ show status ++ ")"
+render_failure (http_failure _) = "courtlistener: CourtListener returned a non-2xx HTTP response"
+render_failure invalid_json = "courtlistener: refused invalid JSON"
+render_failure (invalid_search_response problem) =
+  "courtlistener: refused unexpected search response: " ++ problem

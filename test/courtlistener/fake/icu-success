@@ -1,0 +1,2 @@
+#!/bin/sh
+cat "${COURTLISTENER_FIXTURE_ROOT}/search.json"

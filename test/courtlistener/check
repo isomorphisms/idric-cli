@@ -1,0 +1,130 @@
+#!/bin/sh
+
+set -u
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$HERE/../.." && pwd)
+IDRIC=${IDRIC:-idris2}
+
+status=0
+
+pass() {
+  printf 'PASS\t%s\n' "$1"
+}
+
+fail() {
+  printf 'FAIL\t%s\n' "$1"
+  status=1
+}
+
+skip() {
+  printf 'SKIP\t%s\n' "$1"
+}
+
+available() {
+  case "$1" in
+    */*) test -x "$1" ;;
+    *) command -v "$1" >/dev/null 2>&1 ;;
+  esac
+}
+
+if ! available "$IDRIC"; then
+  skip "courtlistener/idric (not found: $IDRIC)"
+  exit 0
+fi
+
+cd "$ROOT" || exit 1
+
+if "$IDRIC" --build courtlistener.ipkg >/tmp/courtlistener-build.out 2>/tmp/courtlistener-build.err; then
+  pass "courtlistener/build"
+else
+  fail "courtlistener/build"
+  sed 's/^/  /' /tmp/courtlistener-build.out /tmp/courtlistener-build.err
+  exit "$status"
+fi
+
+if IDRIS2_PATH="$ROOT/src" "$IDRIC" -p contrib -p idric_net \
+    test/courtlistener/CourtListenerTests.idric -o courtlistener-tests \
+    >/tmp/courtlistener-tests-build.out 2>/tmp/courtlistener-tests-build.err &&
+    "$ROOT/build/exec/courtlistener-tests"; then
+  :
+else
+  fail "courtlistener/unit-receipts"
+  sed 's/^/  /' /tmp/courtlistener-tests-build.out /tmp/courtlistener-tests-build.err
+fi
+
+export COURTLISTENER_FIXTURE_ROOT="$HERE/fixture"
+
+if ICU="$HERE/fake/icu-success" "$ROOT/build/exec/edric" \
+    courtlistener search "Brown v. Board of Education" \
+    | grep -F "Brown v. Board of Education" >/dev/null; then
+  pass "courtlistener/cli-success"
+else
+  fail "courtlistener/cli-success"
+fi
+
+if ICU="$HERE/fake/icu-success" "$ROOT/build/exec/edric" \
+    courtlistener search "" \
+    >/tmp/courtlistener-malformed.out 2>/tmp/courtlistener-malformed.err; then
+  fail "courtlistener/malformed-request"
+else
+  if grep -F "invalid query" /tmp/courtlistener-malformed.err >/dev/null; then
+    pass "courtlistener/malformed-request"
+  else
+    fail "courtlistener/malformed-request"
+  fi
+fi
+
+if ICU="$HERE/fake/icu-network-failure" "$ROOT/build/exec/edric" \
+    courtlistener search "Brown v. Board of Education" \
+    >/tmp/courtlistener-network.out 2>/tmp/courtlistener-network.err; then
+  fail "courtlistener/network-failure"
+else
+  pass "courtlistener/network-failure"
+fi
+
+if ICU="$HERE/fake/icu-http-failure" "$ROOT/build/exec/edric" \
+    courtlistener search "Brown v. Board of Education" \
+    >/tmp/courtlistener-http.out 2>/tmp/courtlistener-http.err; then
+  fail "courtlistener/non-2xx"
+else
+  if grep -F "non-2xx HTTP response" /tmp/courtlistener-http.err >/dev/null; then
+    pass "courtlistener/non-2xx"
+  else
+    fail "courtlistener/non-2xx"
+  fi
+fi
+
+if ICU="$HERE/fake/icu-invalid-json" "$ROOT/build/exec/edric" \
+    courtlistener search "Brown v. Board of Education" \
+    >/tmp/courtlistener-json.out 2>/tmp/courtlistener-json.err; then
+  fail "courtlistener/invalid-json"
+else
+  if grep -F "refused invalid JSON" /tmp/courtlistener-json.err >/dev/null; then
+    pass "courtlistener/invalid-json"
+  else
+    fail "courtlistener/invalid-json"
+  fi
+fi
+
+if grep -En "curl|prim_send_http|prim_send_https|socket\(|openssl" src/CourtListener.idric \
+    >/tmp/courtlistener-second-http.out; then
+  fail "courtlistener/no-second-http"
+  sed 's/^/  /' /tmp/courtlistener-second-http.out
+else
+  pass "courtlistener/no-second-http"
+fi
+
+if test "${COURTLISTENER_LIVE:-0}" = 1; then
+  if ICU="${ICU:-icu}" "$ROOT/build/exec/edric" \
+      courtlistener search "Brown v. Board of Education" \
+      | grep -Ei "Brown|Board of Education|347 U[.]S[.] 483" >/dev/null; then
+    pass "courtlistener/live-icu"
+  else
+    fail "courtlistener/live-icu"
+  fi
+else
+  skip "courtlistener/live-icu (set COURTLISTENER_LIVE=1)"
+fi
+
+exit "$status"

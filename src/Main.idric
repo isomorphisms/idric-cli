@@ -1,0 +1,48 @@
+module Main
+
+import CourtListener
+import System
+import System.File
+
+usage : String
+usage = "usage: edric courtlistener search QUERY"
+
+fail_with : String → IO ()
+fail_with problem = do
+  _ ← fPutStrLn stderr problem
+  exitFailure
+
+print_results : List CourtListener_Search_Result → IO ()
+print_results [] = putStrLn "No CourtListener results."
+print_results [result] = putStrLn (render_search_result result)
+print_results (result :: rest) = do
+  putStrLn (render_search_result result)
+  putStrLn ""
+  print_results rest
+
+covering
+run_search : String → IO ()
+run_search text =
+  case courtlistener_query text of
+    Left problem => fail_with (render_failure problem)
+    Right query =>
+      case build_search_request query of
+        Left problem => fail_with (render_failure problem)
+        Right request => do
+          outcome ← perform_search request
+          case outcome of
+            Left problem => fail_with (render_failure problem)
+            Right results => print_results results
+
+covering
+run : List String → IO ()
+run ["courtlistener", "search", query] = run_search query
+run _ = fail_with usage
+
+covering
+main : IO ()
+main = do
+  arguments ← getArgs
+  case arguments of
+    _ :: rest => run rest
+    [] => fail_with usage

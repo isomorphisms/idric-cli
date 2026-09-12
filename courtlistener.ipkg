@@ -1,0 +1,9 @@
+package courtlistener
+
+version = 0.1.0
+depends = contrib, idric_net
+sourcedir = "src"
+
+modules = CourtListener, Main
+main = Main
+executable = edric

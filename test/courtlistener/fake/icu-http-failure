@@ -1,0 +1,3 @@
+#!/bin/sh
+cat "${COURTLISTENER_FIXTURE_ROOT}/non-search.json"
+exit 10
