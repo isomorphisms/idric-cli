@@ -1,3 +1,4 @@
 config/amazon-secret
+config/gmail-client.json
 .state/
 .cache/
